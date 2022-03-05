@@ -1,0 +1,266 @@
+<launch>
+
+	<!-- MAVROS -->
+	<!-- example launch script for ArduPilot based FCU's -->
+
+	<arg name="fcu_url" default="/dev/ttyTHS1:921600" /> 
+	<!--<arg name="fcu_url" default="" />-->
+	<arg name="gcs_url" default="" />
+	<arg name="tgt_system" default="1" />
+	<arg name="tgt_component" default="1" />
+	<arg name="log_output" default="screen" />
+	<arg name="fcu_protocol" default="v2.0" />
+	<arg name="respawn_mavros" default="true" />
+
+	<include file="$(find mavros)/launch/node.launch">
+		<arg name="pluginlists_yaml" value="$(find mavros)/launch/apm_pluginlists.yaml" />
+		<arg name="config_yaml" value="$(find mavros)/launch/apm_config.yaml" />
+
+		<arg name="fcu_url" value="$(arg fcu_url)" />
+		<arg name="gcs_url" value="$(arg gcs_url)" />
+		<arg name="tgt_system" value="$(arg tgt_system)" />
+		<arg name="tgt_component" value="$(arg tgt_component)" />
+		<arg name="log_output" value="$(arg log_output)" />
+		<arg name="fcu_protocol" value="$(arg fcu_protocol)" />
+		<arg name="respawn_mavros" value="$(arg respawn_mavros)" />
+	</include>
+<node pkg="rosservice" type="rosservice" name="mavros_stream_rate" args="call --wait /mavros/set_stream_rate 0 20 1"/>
+<!--<node pkg="tf" type="static_transform_publisher" name="odom_base" args="0 0 0 0 0 0  /odom /base_link  200"/>-->
+<!--<node pkg="tf" type="static_transform_publisher" name="base_camera" args="0 0 0 0 0 0  /base_link /camera_link  200"/>--> 
+<!--<node pkg="tf" type="static_transform_publisher" name="map_odom" args="0 0 0 0 0 0  /map /odom  200"/>-->
+
+<!-- transform from local_origin_ned to map-->
+<node pkg="tf" type="static_transform_publisher" name="mapTF_broadcaster" args="0 0 0 0 0 0 1 local_origin_ned map 200" />
+
+<!-- conversion from camera frame to base link frame (align camera X-Y-Z axes with that of Mavros)-->
+<node pkg="tf" type="static_transform_publisher" name="camTF_broadcaster" args="0.1 0 0 0 0 0  base_link camera_link 200" />
+<node pkg="path_planning" type="transform" name="transform"/>
+<!-- PCL Voxel Filter (Downsampling the point cloud)-->
+<node pkg="nodelet" type="nodelet" name="pcl_manager" args="manager" output="screen" />
+
+  <!-- Run a VoxelGrid filter to clean NaNs and downsample the data -->
+  <node pkg="nodelet" type="nodelet" name="voxel_grid" args="load pcl/VoxelGrid pcl_manager" output="screen">
+    <remap from="~input" to="/camera/depth/color/points" />
+    <rosparam>
+      filter_field_name: z
+      filter_limit_min: 0.01
+      filter_limit_max: 4.0
+      filter_limit_negative: False
+      leaf_size: 0.10
+    </rosparam>
+
+    <rosparam>
+      filter_field_name: x
+      filter_limit_min: -2.0
+      filter_limit_max: 2.0
+      filter_limit_negative: False
+      leaf_size: 0.10
+    </rosparam>
+
+    <rosparam>
+      filter_field_name: y
+      filter_limit_min: -2.0
+      filter_limit_max: 2.0
+      filter_limit_negative: False
+      leaf_size: 0.10
+    </rosparam>
+
+</node>
+
+<!-- 
+  Example launch file for octomap_server mapping: 
+  Listens to incoming PointCloud2 data and incrementally builds an octomap. 
+  The data is sent out in different representations. 
+  Copy this file into your workspace and adjust as needed, see
+  www.ros.org/wiki/octomap_server for details  
+-->
+
+	<node pkg="octomap_server" type="octomap_server_node" name="octomap_server">
+		<param name="resolution" value="0.20" />
+		
+		<!-- fixed map frame (set to 'map' if SLAM or localization running!) -->
+		<param name="frame_id" type="string" value="map" />
+		<!--<param name="base_frame_id" type="string" value="base_link" />-->
+		<!-- maximum range to integrate (speedup!) -->
+		<param name="sensor_model/max_range" value="4.0" />
+
+		
+    		<!--<param name="pointcloud_min_z" type="double" value="0.2" />
+    		<param name="pointcloud_max_z" type="double" value="3.5" />
+    		<param name="occupancy_min_z" type="double" value="0.2" />
+    		<param name="occupancy_max_z" type="double" value="4.0" /> -->
+
+
+		
+		<!-- data source to integrate (PointCloud2) -->
+		<remap from="cloud_in" to="/voxel_grid/output" />
+	
+	</node>
+
+  <arg name="camera"              default="camera"/>
+  <arg name="tf_prefix"           default="$(arg camera)"/>
+  <arg name="external_manager"    default="false"/>
+  <arg name="manager"             default="realsense2_camera_manager"/>
+
+  <!-- Camera device specific arguments -->
+
+  <arg name="serial_no"           default=""/>
+  <arg name="usb_port_id"         default=""/>
+  <arg name="device_type"         default=""/>
+  <arg name="json_file_path"      default=""/>
+
+  <arg name="fisheye_width"       default="-1"/>
+  <arg name="fisheye_height"      default="-1"/>
+  <arg name="enable_fisheye"      default="false"/>
+
+  <arg name="depth_width"         default="640"/>
+  <arg name="depth_height"        default="480"/>
+  <arg name="enable_depth"        default="true"/>
+
+  <arg name="infra_width"         default="640"/>
+  <arg name="infra_height"        default="480"/>
+  <arg name="enable_infra1"       default="false"/>
+  <arg name="enable_infra2"       default="false"/>
+
+  <arg name="color_width"         default="640"/>
+  <arg name="color_height"        default="480"/>
+  <arg name="enable_color"        default="true"/>
+
+  <arg name="fisheye_fps"         default="-1"/>
+  <arg name="depth_fps"           default="30"/>
+  <arg name="infra_fps"           default="30"/>
+  <arg name="color_fps"           default="30"/>
+  <arg name="gyro_fps"            default="30"/>
+  <arg name="accel_fps"           default="-1"/>
+  <arg name="enable_gyro"         default="false"/>
+  <arg name="enable_accel"        default="false"/>
+
+  <arg name="enable_pointcloud"   default="true"/>
+  <arg name="pointcloud_texture_stream" default="RS2_STREAM_ANY"/>
+  <arg name="enable_sync"         default="true"/>
+  <arg name="align_depth"         default="true"/>
+  <arg name="filters"             default="pointcloud"/>
+
+
+
+
+  <arg name="publish_tf"          default="true"/>
+  <arg name="tf_publish_rate"     default="0"/> <!-- 0 - static transform -->
+
+  <!-- rgbd_launch specific arguments -->
+
+  <!-- Arguments for remapping all device namespaces -->
+  <arg name="rgb"                             default="color" />
+  <arg name="ir"                              default="infra1" />
+  <arg name="depth"                           default="depth" />
+  <arg name="depth_registered_pub"            default="depth_registered" />
+  <arg name="depth_registered"                default="depth_registered" unless="$(arg align_depth)" />
+  <arg name="depth_registered"                default="aligned_depth_to_color" if="$(arg align_depth)" />
+  <arg name="depth_registered_filtered"       default="$(arg depth_registered)" />
+  <arg name="projector"                       default="projector" />
+
+  <!-- Disable bond topics by default -->
+  <arg name="bond"                            default="false" />
+  <arg name="respawn"                         default="$(arg bond)" />
+
+  <!-- Processing Modules -->
+  <arg name="rgb_processing"                  default="true"/>
+  <arg name="debayer_processing"              default="false" />
+  <arg name="ir_processing"                   default="false"/>
+  <arg name="depth_processing"                default="false"/>
+  <arg name="depth_registered_processing"     default="true"/>
+  <arg name="disparity_processing"            default="false"/>
+  <arg name="disparity_registered_processing" default="false"/>
+  <arg name="hw_registered_processing"        default="$(arg align_depth)" />
+  <arg name="sw_registered_processing"        default="true" unless="$(arg align_depth)" />
+  <arg name="sw_registered_processing"        default="false" if="$(arg align_depth)" />
+
+  <group ns="$(arg camera)">
+
+    <!-- Launch the camera device nodelet-->
+    <include file="$(find realsense2_camera)/launch/includes/nodelet.launch.xml">
+      <arg name="external_manager"         value="$(arg external_manager)"/>
+      <arg name="manager"                  value="$(arg manager)"/>
+      <arg name="tf_prefix"                value="$(arg tf_prefix)"/>
+      <arg name="serial_no"                value="$(arg serial_no)"/>
+      <arg name="usb_port_id"              value="$(arg usb_port_id)"/>
+      <arg name="device_type"              value="$(arg device_type)"/>
+      <arg name="json_file_path"           value="$(arg json_file_path)"/>
+
+      <arg name="enable_pointcloud"        value="$(arg enable_pointcloud)"/>
+      <arg name="pointcloud_texture_stream" value="$(arg pointcloud_texture_stream)"/>
+      <arg name="enable_sync"              value="$(arg enable_sync)"/>
+      <arg name="align_depth"              value="$(arg align_depth)"/>
+
+      <arg name="fisheye_width"            value="$(arg fisheye_width)"/>
+      <arg name="fisheye_height"           value="$(arg fisheye_height)"/>
+      <arg name="enable_fisheye"           value="$(arg enable_fisheye)"/>
+
+      <arg name="depth_width"              value="$(arg depth_width)"/>
+      <arg name="depth_height"             value="$(arg depth_height)"/>
+      <arg name="enable_depth"             value="$(arg enable_depth)"/>
+
+      <arg name="color_width"              value="$(arg color_width)"/>
+      <arg name="color_height"             value="$(arg color_height)"/>
+      <arg name="enable_color"             value="$(arg enable_color)"/>
+
+      <arg name="infra_width"              value="$(arg infra_width)"/>
+      <arg name="infra_height"             value="$(arg infra_height)"/>
+      <arg name="enable_infra1"            value="$(arg enable_infra1)"/>
+      <arg name="enable_infra2"            value="$(arg enable_infra2)"/>
+
+      <arg name="fisheye_fps"              value="$(arg fisheye_fps)"/>
+      <arg name="depth_fps"                value="$(arg depth_fps)"/>
+      <arg name="infra_fps"                value="$(arg infra_fps)"/>
+      <arg name="color_fps"                value="$(arg color_fps)"/>
+      <arg name="gyro_fps"                 value="$(arg gyro_fps)"/>
+      <arg name="accel_fps"                value="$(arg accel_fps)"/>
+      <arg name="enable_gyro"              value="$(arg enable_gyro)"/>
+      <arg name="enable_accel"             value="$(arg enable_accel)"/>
+      <arg name="filters"                  value="$(arg filters)"/>
+
+      <arg name="publish_tf"               value="$(arg publish_tf)"/>
+      <arg name="tf_publish_rate"          value="$(arg tf_publish_rate)"/>
+    </include>
+
+    <!-- RGB processing -->
+    <include if="$(arg rgb_processing)"
+             file="$(find rgbd_launch)/launch/includes/rgb.launch.xml">
+      <arg name="manager"                       value="$(arg manager)" />
+      <arg name="respawn"                       value="$(arg respawn)" />
+      <arg name="rgb"                           value="$(arg rgb)" />
+      <arg name="debayer_processing"            value="$(arg debayer_processing)" />
+    </include>
+
+    <group if="$(eval depth_registered_processing and sw_registered_processing)">
+      <node pkg="nodelet" type="nodelet" name="register_depth"
+            args="load depth_image_proc/register $(arg manager) $(arg bond)" respawn="$(arg respawn)">
+        <remap from="rgb/camera_info"             to="$(arg rgb)/camera_info" />
+        <remap from="depth/camera_info"           to="$(arg depth)/camera_info" />
+        <remap from="depth/image_rect"            to="$(arg depth)/image_rect_raw" />
+        <remap from="depth_registered/image_rect" to="$(arg depth_registered)/sw_registered/image_rect_raw" />
+      </node>
+
+      <!-- Publish registered XYZRGB point cloud with software registered input -->
+      <node pkg="nodelet" type="nodelet" name="points_xyzrgb_sw_registered"
+            args="load depth_image_proc/point_cloud_xyzrgb $(arg manager) $(arg bond)" respawn="$(arg respawn)">
+        <remap from="rgb/image_rect_color"        to="$(arg rgb)/image_rect_color" />
+        <remap from="rgb/camera_info"             to="$(arg rgb)/camera_info" />
+        <remap from="depth_registered/image_rect" to="$(arg depth_registered_filtered)/sw_registered/image_rect_raw" />
+        <remap from="depth_registered/points"     to="$(arg depth_registered)/points" />
+      </node>
+    </group>
+
+    <group if="$(eval depth_registered_processing and hw_registered_processing)">
+      <!-- Publish registered XYZRGB point cloud with hardware registered input (ROS Realsense depth alignment) -->
+      <node pkg="nodelet" type="nodelet" name="points_xyzrgb_hw_registered"
+            args="load depth_image_proc/point_cloud_xyzrgb $(arg manager) $(arg bond)" respawn="$(arg respawn)">
+        <remap from="rgb/image_rect_color"        to="$(arg rgb)/image_rect_color" />
+        <remap from="rgb/camera_info"             to="$(arg rgb)/camera_info" />
+        <remap from="depth_registered/image_rect" to="$(arg depth_registered)/image_raw" />
+        <remap from="depth_registered/points"     to="$(arg depth_registered_pub)/points" />
+      </node>
+    </group>
+
+  </group>
+</launch>
