@@ -154,11 +154,7 @@ link_libraries(${OCTOMAP_LIBRARIES} ${fcl_LIBRARY_DIRS} ${OMPL_LIBRARY_DIRS})
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(${PROJECT_NAME}_node src/path_planning.cpp)
-add_executable(old_path_planning src/old_path_planning.cpp)
-add_executable(traj_gen src/trajectory_generator.cpp)
-add_executable(scale src/scaling.cpp)
-add_executable(goal_transform src/goalpoint_transformer.cpp)
-add_executable(transform src/transform.cpp)
+
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
