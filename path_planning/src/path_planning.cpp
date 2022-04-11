@@ -51,17 +51,13 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <math.h>
-// clear octomap service
 #include <std_srvs/Empty.h>
 
 namespace ob = ompl::base;
 namespace og = ompl::geometric;
 
 std_srvs::Empty srv;
-
-// Declear some global variables
 mavros_msgs::State current_state;
-// ROS publishers
 int idx = 0;
 ros::Publisher vis_pub;
 ros::Publisher traj_pub;
@@ -76,9 +72,7 @@ public:
 		current_pos[0] = x;
 		current_pos[1] = y;
 		current_pos[2] = z;
-		// std::cout << " " << current_pos[0] << " " << current_pos[1] << " " << current_pos[2] << std::endl;
 	}
-	// Initialise the alg.
 	void init_start(void)
 	{
 
@@ -88,8 +82,6 @@ public:
 			set_start = true;
 		}
 	}
-
-	// Setting the starting point using the Drone Odometry.
 	void setStart(double x, double y, double z)
 	{
 		ob::ScopedState<ob::SE3StateSpace> start(space);
@@ -98,11 +90,8 @@ public:
 		pdef->clearStartStates();
 		pdef->addStartState(start);
 	}
-
-	// Setting the Goal relatives coordinates for the mission.
 	void setGoal(double x, double y, double z, double ax, double ay, double az, double a)
 	{
-
 		if (prev_goal[0] != x || prev_goal[1] != y || prev_goal[2] != z)
 		{
 			std::cout << "Enter the Altitude (m) of the Goal Point: ";
@@ -126,31 +115,21 @@ public:
 				plan();
 		}
 	}
-	// Update the Octomap
 	void updateMap(std::shared_ptr<fcl::CollisionGeometry> map)
 	{
 		tree_obj = map;
 	}
-
-	// Constructor
 	planner(void)
 	{
 		// Change the values to modify the dimesion of the drone in the Space. X-Y-Z (meters)
 		Quadcopter = std::shared_ptr<fcl::CollisionGeometry>(new fcl::Box(0.55, 0.55, 0.50));
-		// Set the resolution of the octomap, this parameter can be left unchanged.
 		fcl::OcTree *tree = new fcl::OcTree(std::shared_ptr<const octomap::OcTree>(new octomap::OcTree(0.05)));
 		tree_obj = std::shared_ptr<fcl::CollisionGeometry>(tree);
 		space = ob::StateSpacePtr(new ob::SE3StateSpace());
 
-		// create a start state
 		ob::ScopedState<ob::SE3StateSpace> start(space);
-
-		// create a goal state
 		ob::ScopedState<ob::SE3StateSpace> goal(space);
-
-		// set the bounds for the R^3 part of SE(3)
 		ob::RealVectorBounds bounds(3);
-
 		bounds.setLow(0, -20);
 		bounds.setHigh(0, 20);
 		bounds.setLow(1, -20);
@@ -159,13 +138,10 @@ public:
 		bounds.setHigh(2, 4.0);
 		space->as<ob::SE3StateSpace>()->setBounds(bounds);
 
-		// construct an instance of  space information from this state space
 		si = ob::SpaceInformationPtr(new ob::SpaceInformation(space));
 
 		start->setXYZ(0, 0, 0);
-
 		start->as<ob::SO3StateSpace::StateType>(1)->setIdentity();
-		// start.random();
 
 		goal->setXYZ(0.0, 0.0, 0.0);
 		prev_goal[0] = 0;
@@ -177,20 +153,10 @@ public:
 		prev_goal[6] = 1;
 
 		goal->as<ob::SO3StateSpace::StateType>(1)->setIdentity();
-		// goal.random();
-
-		// set state validity checking for this space
 		si->setStateValidityChecker(std::bind(&planner::isStateValid, this, std::placeholders::_1));
-
-		// create a problem instance
 		pdef = ob::ProblemDefinitionPtr(new ob::ProblemDefinition(si));
-
 		// set the start and goal states
 		pdef->setStartAndGoalStates(start, goal);
-
-		// fix invalid Start/Goal States
-		// If the starting point or the goal point are in Invalid position, the alg. will search the nearest position within a delta.
-		// In this case the range is setted as 1.2meters.
 		pdef->fixInvalidInputStates(1.2, 1.2, 10);
 
 		pdef->getSolutionDifference();
@@ -214,8 +180,6 @@ public:
 				break;
 			}
 		}
-		// set Optimization objective
-		// std::cout << "OMPL started " << std::endl;
 	}
 	// Destructor
 	~planner()
@@ -226,7 +190,6 @@ public:
 	{
 		if (path_smooth != NULL && set_start)
 		{
-			// std::cout << "Total Points:" << path_smooth->getStateCount () << std::endl;
 			if (path_smooth->getStateCount() > 2)
 			{
 				for (std::size_t idx = 0; idx < path_smooth->getStateCount(); idx++)
@@ -238,9 +201,7 @@ public:
 				}
 				if (replan_flag)
 				{
-					// idx = 0;
 					replan_flag = false;
-					// path_smooth->clear();
 					pdef->clearSolutionPaths();
 					std::cout << "REPLAN!!!" << std::endl;
 					plan();
@@ -248,7 +209,6 @@ public:
 
 				else
 				{
-					// std::cout << "Replanning is not required" << std::endl;
 				}
 			}
 		}
@@ -259,43 +219,26 @@ public:
 
 		og::InformedRRTstar *informedrrtstar = new ompl::geometric::InformedRRTstar(si);
 		informedrrtstar->setRange(4);
-		// informedrrtstar->setGoalBias(planner_goal_bias_);
 		informedrrtstar->setKNearest(false);
 
 		ob::PlannerPtr plan(informedrrtstar);
-		// create a planner for the defined space
-		// ob::PlannerPtr plan(new og::InformedRRTstar(si));
-
-		// set the problem we are trying to solve for the planner
 		plan->setProblemDefinition(pdef);
-
-		// perform setup steps for the planner
 		plan->setup();
-
-		// print the settings for this space
 		si->printSettings(std::cout);
-
-		// print the problem settings
 		pdef->print(std::cout);
 
-		// attempt to solve the problem within 1 seconds of planning time
-		ob::PlannerStatus solved = plan->solve(2);
+		ob::PlannerStatus solved = plan->solve(0.5);
 
 		if (solved)
 		{
 			std::cout << "Found a solution:" << std::endl;
 			ob::PathPtr path = pdef->getSolutionPath();
 			og::PathGeometric *pth = pdef->getSolutionPath()->as<og::PathGeometric>();
-			pth->printAsMatrix(std::cout);
-
-			// print the path to screen
 			path->print(std::cout);
 
 			og::PathSimplifier *pathBSpline = new og::PathSimplifier(si);
 			path_smooth = new og::PathGeometric(dynamic_cast<const og::PathGeometric &>(*pdef->getSolutionPath()));
 			pathBSpline->smoothBSpline(*path_smooth, 2);
-			// pathBSpline->simplifyMax(*path_smooth);
-
 			// Publish path as markers
 			visualization_msgs::Marker marker;
 			marker.action = visualization_msgs::Marker::DELETEALL;
@@ -304,15 +247,10 @@ public:
 			for (std::size_t idx = 0; idx < path_smooth->getStateCount(); idx++)
 			{
 				ros::Rate rate3(40);
-				// cast the abstract state type to the type we expect
+
 				const ob::SE3StateSpace::StateType *se3state = path_smooth->getState(idx)->as<ob::SE3StateSpace::StateType>();
-
-				// extract the first component of the state and cast it to what we expect
 				const ob::RealVectorStateSpace::StateType *pos = se3state->as<ob::RealVectorStateSpace::StateType>(0);
-
-				// extract the second component of the state and cast it to what we expect
 				const ob::SO3StateSpace::StateType *rot = se3state->as<ob::SO3StateSpace::StateType>(1);
-
 				marker.header.frame_id = "map";
 				marker.header.stamp = ros::Time();
 				marker.ns = "path";
@@ -334,73 +272,50 @@ public:
 				marker.color.g = 0.3;
 				marker.color.b = 0;
 				vis_pub.publish(marker);
-
 				std::cout << "Published marker: " << idx << std::endl;
 				rate3.sleep();
 			}
-
 			geometry_msgs::PoseStamped msg;
 			dist_err[0] = 0;
 			dist_err[1] = 0;
 			dist_err[2] = 0;
-
 			idx = 0;
 			while (idx < path_smooth->getStateCount())
 			{
 				ros::Rate rate2(50);
-
-				// cast the abstract state type to the type we expect
 				const ob::SE3StateSpace::StateType *se3state = path_smooth->getState(idx)->as<ob::SE3StateSpace::StateType>();
-
-				// extract the first component of the state and cast it to what we expect
 				const ob::RealVectorStateSpace::StateType *pos = se3state->as<ob::RealVectorStateSpace::StateType>(0);
-
-				// extract the second component of the state and cast it to what we expect
 				const ob::SO3StateSpace::StateType *rot = se3state->as<ob::SO3StateSpace::StateType>(1);
 
 				msg.header.stamp = ros::Time::now();
 				msg.header.frame_id = "base_link";
-				// Position MESSAGE
 				msg.pose.position.x = pos->values[0];
 				msg.pose.position.y = pos->values[1];
 				msg.pose.position.z = pos->values[2];
-				// stores values in vector
 				desired_pos[0] = pos->values[0];
 				desired_pos[1] = pos->values[1];
 				desired_pos[2] = pos->values[2];
 
-				// delta
 				delta[0] = current_pos[0] - desired_pos[0]; // x
 				delta[1] = current_pos[1] - desired_pos[1]; // y
 				delta[2] = current_pos[2] - desired_pos[2]; // z
-				// YAW control
 				desired_yaw = atan2(delta[1], delta[0]) - M_PI;
 				desired_pitch = -atan2(delta[2], sqrt(delta[0] * delta[0] + delta[1] * delta[1]));
-				// generate the quaternion:
 				tf2::Quaternion quat;
 				quat.setRPY(0, 0, desired_yaw);
 				quat.normalize();
-				// Orientation MESSAGE
 				msg.pose.orientation.x = quat[0];
 				msg.pose.orientation.y = quat[1];
 				msg.pose.orientation.z = quat[2];
 				msg.pose.orientation.w = quat[3];
-
-				// Give values:
-				// std::cout << "Published waypoint n. : " << idx << std::endl;
-				// std::cout << "Waypoint: " << msg.pose.position.x << " " << msg.pose.position.y << " " << msg.pose.position.z << std::endl;
-				// std::cout << "Attitude: " << msg.pose.orientation.x << " " << msg.pose.orientation.y << " " << msg.pose.orientation.z << std::endl;
-				// Wait to reach the sent point!!!
 				dist_err[0] = desired_pos[0] - current_pos[0]; // x
 				dist_err[1] = desired_pos[1] - current_pos[1]; // y
 				dist_err[2] = desired_pos[2] - current_pos[2]; // z
-				ros::Rate r(2);								   // 50 Hz!
+				ros::Rate r(2);								 
 				// Compute the euclidean distance and loop:
 				while (sqrt(pow(dist_err[0], 2) + pow(dist_err[1], 2) + pow(dist_err[3], 2)) > 0.2)
 				{
 					traj_pub.publish(msg);
-					//	std::cout << "dist:" << dist_err[0] << " " << dist_err[1] << " " << dist_err[2] << std::endl;
-					// std::cout << "Waiting to reach point:" << idx << std::endl;
 					dist_err[0] = desired_pos[0] - current_pos[0]; // x
 					dist_err[1] = desired_pos[1] - current_pos[1]; // y
 					dist_err[2] = desired_pos[2] - current_pos[2]; // z
@@ -477,11 +392,6 @@ private:
 
 		return (!collisionResult.isCollision());
 	}
-
-	// Returns a structure representing the optimization objective to use
-	// for optimal motion planning. This method returns an objective which
-	// attempts to minimize the length in configuration space of computed
-	// paths.
 	ob::OptimizationObjectivePtr getThresholdPathLengthObj(const ob::SpaceInformationPtr &si)
 	{
 		ob::OptimizationObjectivePtr obj(new ob::PathLengthOptimizationObjective(si));
@@ -513,12 +423,9 @@ void octomapCallback(const octomap_msgs::Octomap::ConstPtr &msg, planner *planne
 {
 	ros::Rate rate(0.2);
 	// ros::service::call("/octomap_server/reset", srv);
-	//  convert octree to collision object
 	octomap::OcTree *tree_oct = dynamic_cast<octomap::OcTree *>(octomap_msgs::msgToMap(*msg));
 	fcl::OcTree *tree = new fcl::OcTree(std::shared_ptr<const octomap::OcTree>(tree_oct));
-	// Update the octree used for collision checking
 	planner_ptr->updateMap(std::shared_ptr<fcl::CollisionGeometry>(tree));
-	// planner_ptr->replan(); // decommentare
 	rate.sleep();
 }
 
@@ -527,13 +434,6 @@ void posCb(const geometry_msgs::PoseStamped::ConstPtr &pos, planner *planner_ptr
 
 	planner_ptr->checkPos(pos->pose.position.x, pos->pose.position.y, pos->pose.position.z);
 }
-/*
-void odomCb(const nav_msgs::Odometry::ConstPtr &msg, planner *planner_ptr)
-{
-	planner_ptr->setStart(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
-	planner_ptr->init_start();
-}
-*/
 void odomCb(const geometry_msgs::PoseStamped::ConstPtr &msg, planner *planner_ptr)
 {
 	planner_ptr->setStart(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
@@ -549,13 +449,6 @@ void state_callback(const mavros_msgs::State::ConstPtr &msg)
 {
 	current_state = *msg;
 }
-/*
-void goalCb(const geometry_msgs::PointStamped::ConstPtr &msg, planner* planner_ptr)
-{
-	planner_ptr->setGoal(msg->point.x, msg->point.y, msg->point.z);
-}
-*/
-
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "octomap_planner");
