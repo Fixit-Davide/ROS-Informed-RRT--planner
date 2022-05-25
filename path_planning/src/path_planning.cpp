@@ -84,9 +84,9 @@ public:
 	}
 	void setStart(double x, double y, double z)
 	{
-		ob::ScopedState<ob::SE3StateSpace> start(space);
+		ompl::base::ScopedState<ompl::base::SE3StateSpace> start(space);
 		start->setXYZ(x, y, z);
-		start->as<ob::SO3StateSpace::StateType>(1)->setAxisAngle(prev_goal[3], prev_goal[4], prev_goal[5], prev_goal[6]);
+		start->as<ompl::base::SO3StateSpace::StateType>(1)->setAxisAngle(prev_goal[3], prev_goal[4], prev_goal[5], prev_goal[6]);
 		pdef->clearStartStates();
 		pdef->addStartState(start);
 	}
@@ -96,7 +96,7 @@ public:
 		{
 			std::cout << "Enter the Altitude (m) of the Goal Point: ";
 			std::cin >> z;
-			ob::ScopedState<ob::SE3StateSpace> goal(space);
+			ompl::base::ScopedState<ompl::base::SE3StateSpace> goal(space);
 			goal->setXYZ(x, y, z);
 			prev_goal[0] = x;
 			prev_goal[1] = y;
@@ -106,11 +106,11 @@ public:
 			prev_goal[5] = az;
 			prev_goal[6] = a;
 
-			goal->as<ob::SO3StateSpace::StateType>(1)->setAxisAngle(ax, ay, az, a);
+			goal->as<ompl::base::SO3StateSpace::StateType>(1)->setAxisAngle(ax, ay, az, a);
 			pdef->clearGoal();
 			pdef->setGoalState(goal);
 			std::cout << "Goal_Point set to: " << x << " " << y << " " << z << std::endl;
-			// std::cout << "Final Attitude set to: " << ax << " " << ay << " " << az << std::endl;
+			std::cout << "Final Attitude set to: " << ax << " " << ay << " " << az << std::endl;
 			if (set_start)
 				plan();
 		}
@@ -125,23 +125,23 @@ public:
 		Quadcopter = std::shared_ptr<fcl::CollisionGeometry>(new fcl::Box(0.55, 0.55, 0.50));
 		fcl::OcTree *tree = new fcl::OcTree(std::shared_ptr<const octomap::OcTree>(new octomap::OcTree(0.05)));
 		tree_obj = std::shared_ptr<fcl::CollisionGeometry>(tree);
-		space = ob::StateSpacePtr(new ob::SE3StateSpace());
+		space = ompl::base::StateSpacePtr(new ompl::base::SE3StateSpace());
 
-		ob::ScopedState<ob::SE3StateSpace> start(space);
-		ob::ScopedState<ob::SE3StateSpace> goal(space);
-		ob::RealVectorBounds bounds(3);
+		ompl::base::ScopedState<ompl::base::SE3StateSpace> start(space);
+		ompl::base::ScopedState<ompl::base::SE3StateSpace> goal(space);
+		ompl::base::RealVectorBounds bounds(3);
 		bounds.setLow(0, -20);
 		bounds.setHigh(0, 20);
 		bounds.setLow(1, -20);
 		bounds.setHigh(1, 20);
 		bounds.setLow(2, 0.5);
 		bounds.setHigh(2, 4.0);
-		space->as<ob::SE3StateSpace>()->setBounds(bounds);
+		space->as<ompl::base::SE3StateSpace>()->setBounds(bounds);
 
-		si = ob::SpaceInformationPtr(new ob::SpaceInformation(space));
+		si = ompl::base::SpaceInformationPtr(new ompl::base::SpaceInformation(space));
 
 		start->setXYZ(0, 0, 0);
-		start->as<ob::SO3StateSpace::StateType>(1)->setIdentity();
+		start->as<ompl::base::SO3StateSpace::StateType>(1)->setIdentity();
 
 		goal->setXYZ(0.0, 0.0, 0.0);
 		prev_goal[0] = 0;
@@ -152,9 +152,9 @@ public:
 		prev_goal[5] = 0;
 		prev_goal[6] = 1;
 
-		goal->as<ob::SO3StateSpace::StateType>(1)->setIdentity();
+		goal->as<ompl::base::SO3StateSpace::StateType>(1)->setIdentity();
 		si->setStateValidityChecker(std::bind(&planner::isStateValid, this, std::placeholders::_1));
-		pdef = ob::ProblemDefinitionPtr(new ob::ProblemDefinition(si));
+		pdef = ompl::base::ProblemDefinitionPtr(new ompl::base::ProblemDefinition(si));
 		// set the start and goal states
 		pdef->setStartAndGoalStates(start, goal);
 		pdef->fixInvalidInputStates(1.2, 1.2, 10);
@@ -217,27 +217,27 @@ public:
 	void plan(void)
 	{
 
-		og::InformedRRTstar *informedrrtstar = new ompl::geometric::InformedRRTstar(si);
+		ompl::geometric::InformedRRTstar *informedrrtstar = new ompl::geometric::InformedRRTstar(si);
 		informedrrtstar->setRange(4);
 		informedrrtstar->setKNearest(false);
 
-		ob::PlannerPtr plan(informedrrtstar);
+		ompl::base::PlannerPtr plan(informedrrtstar);
 		plan->setProblemDefinition(pdef);
 		plan->setup();
 		si->printSettings(std::cout);
 		pdef->print(std::cout);
 
-		ob::PlannerStatus solved = plan->solve(0.5);
+		ompl::base::PlannerStatus solved = plan->solve(0.5);
 
 		if (solved)
 		{
 			std::cout << "Found a solution:" << std::endl;
-			ob::PathPtr path = pdef->getSolutionPath();
-			og::PathGeometric *pth = pdef->getSolutionPath()->as<og::PathGeometric>();
+			ompl::base::PathPtr path = pdef->getSolutionPath();
+			ompl::geometric::PathGeometric *pth = pdef->getSolutionPath()->as<ompl::geometric::PathGeometric>();
 			path->print(std::cout);
 
-			og::PathSimplifier *pathBSpline = new og::PathSimplifier(si);
-			path_smooth = new og::PathGeometric(dynamic_cast<const og::PathGeometric &>(*pdef->getSolutionPath()));
+			ompl::geometric::PathSimplifier *pathBSpline = new ompl::geometric::PathSimplifier(si);
+			path_smooth = new ompl::geometric::PathGeometric(dynamic_cast<const ompl::geometric::PathGeometric &>(*pdef->getSolutionPath()));
 			pathBSpline->smoothBSpline(*path_smooth, 2);
 			// Publish path as markers
 			visualization_msgs::Marker marker;
@@ -248,9 +248,9 @@ public:
 			{
 				ros::Rate rate3(40);
 
-				const ob::SE3StateSpace::StateType *se3state = path_smooth->getState(idx)->as<ob::SE3StateSpace::StateType>();
-				const ob::RealVectorStateSpace::StateType *pos = se3state->as<ob::RealVectorStateSpace::StateType>(0);
-				const ob::SO3StateSpace::StateType *rot = se3state->as<ob::SO3StateSpace::StateType>(1);
+				const ompl::base::SE3StateSpace::StateType *se3state = path_smooth->getState(idx)->as<ompl::base::SE3StateSpace::StateType>();
+				const ompl::base::RealVectorStateSpace::StateType *pos = se3state->as<ompl::base::RealVectorStateSpace::StateType>(0);
+				const ompl::base::SO3StateSpace::StateType *rot = se3state->as<ompl::base::SO3StateSpace::StateType>(1);
 				marker.header.frame_id = "map";
 				marker.header.stamp = ros::Time();
 				marker.ns = "path";
@@ -283,9 +283,9 @@ public:
 			while (idx < path_smooth->getStateCount())
 			{
 				ros::Rate rate2(50);
-				const ob::SE3StateSpace::StateType *se3state = path_smooth->getState(idx)->as<ob::SE3StateSpace::StateType>();
-				const ob::RealVectorStateSpace::StateType *pos = se3state->as<ob::RealVectorStateSpace::StateType>(0);
-				const ob::SO3StateSpace::StateType *rot = se3state->as<ob::SO3StateSpace::StateType>(1);
+				const ompl::base::SE3StateSpace::StateType *se3state = path_smooth->getState(idx)->as<ompl::base::SE3StateSpace::StateType>();
+				const ompl::base::RealVectorStateSpace::StateType *pos = se3state->as<ompl::base::RealVectorStateSpace::StateType>(0);
+				const ompl::base::SO3StateSpace::StateType *rot = se3state->as<ompl::base::SO3StateSpace::StateType>(1);
 
 				msg.header.stamp = ros::Time::now();
 				msg.header.frame_id = "base_link";
@@ -339,13 +339,13 @@ public:
 
 private:
 	// construct the state space we are planning in
-	ob::StateSpacePtr space;
+	ompl::base::StateSpacePtr space;
 
 	// construct an instance of  space information from this state space
-	ob::SpaceInformationPtr si;
+	ompl::base::SpaceInformationPtr si;
 
 	// create a problem instance
-	ob::ProblemDefinitionPtr pdef;
+	ompl::base::ProblemDefinitionPtr pdef;
 
 	// goal state
 	double prev_goal[7];
@@ -357,7 +357,7 @@ private:
 	double desired_pitch;
 	double delta[3];
 	double dist_err[3];
-	og::PathGeometric *path_smooth = NULL;
+	ompl::geometric::PathGeometric *path_smooth = NULL;
 
 	bool replan_flag = false;
 
@@ -368,16 +368,16 @@ private:
 	// Flag for initialization
 	bool set_start = false;
 
-	bool isStateValid(const ob::State *state)
+	bool isStateValid(const ompl::base::State *state)
 	{
 		// cast the abstract state type to the type we expect
-		const ob::SE3StateSpace::StateType *se3state = state->as<ob::SE3StateSpace::StateType>();
+		const ompl::base::SE3StateSpace::StateType *se3state = state->as<ompl::base::SE3StateSpace::StateType>();
 
 		// extract the first component of the state and cast it to what we expect
-		const ob::RealVectorStateSpace::StateType *pos = se3state->as<ob::RealVectorStateSpace::StateType>(0);
+		const ompl::base::RealVectorStateSpace::StateType *pos = se3state->as<ompl::base::RealVectorStateSpace::StateType>(0);
 
 		// extract the second component of the state and cast it to what we expect
-		const ob::SO3StateSpace::StateType *rot = se3state->as<ob::SO3StateSpace::StateType>(1);
+		const ompl::base::SO3StateSpace::StateType *rot = se3state->as<ompl::base::SO3StateSpace::StateType>(1);
 
 		fcl::CollisionObject treeObj((tree_obj));
 		fcl::CollisionObject aircraftObject(Quadcopter);
@@ -392,26 +392,26 @@ private:
 
 		return (!collisionResult.isCollision());
 	}
-	ob::OptimizationObjectivePtr getThresholdPathLengthObj(const ob::SpaceInformationPtr &si)
+	ompl::base::OptimizationObjectivePtr getThresholdPathLengthObj(const ompl::base::SpaceInformationPtr &si)
 	{
-		ob::OptimizationObjectivePtr obj(new ob::PathLengthOptimizationObjective(si));
-		obj->setCostThreshold(ob::Cost(4));
+		ompl::base::OptimizationObjectivePtr obj(new ompl::base::PathLengthOptimizationObjective(si));
+		obj->setCostThreshold(ompl::base::Cost(4));
 		return obj;
 	}
 
-	ob::OptimizationObjectivePtr getPathLengthObjWithCostToGo(const ob::SpaceInformationPtr &si)
+	ompl::base::OptimizationObjectivePtr getPathLengthObjWithCostToGo(const ompl::base::SpaceInformationPtr &si)
 	{
-		ob::OptimizationObjectivePtr obj(new ob::PathLengthOptimizationObjective(si));
-		obj->setCostToGoHeuristic(&ob::goalRegionCostToGo);
+		ompl::base::OptimizationObjectivePtr obj(new ompl::base::PathLengthOptimizationObjective(si));
+		obj->setCostToGoHeuristic(&ompl::base::goalRegionCostToGo);
 		return obj;
 	}
 
-	ob::OptimizationObjectivePtr getBalancedObjective(const ob::SpaceInformationPtr &si)
+	ompl::base::OptimizationObjectivePtr getBalancedObjective(const ompl::base::SpaceInformationPtr &si)
 	{
-		ob::OptimizationObjectivePtr lengthObj(new ob::PathLengthOptimizationObjective(si));
-		ob::OptimizationObjectivePtr clearObj(new ClearanceObjective(si));
+		ompl::base::OptimizationObjectivePtr lengthObj(new ompl::base::PathLengthOptimizationObjective(si));
+		ompl::base::OptimizationObjectivePtr clearObj(new ClearanceObjective(si));
 
-		ob::MultiOptimizationObjective *obj = new ob::MultiOptimizationObjective(si);
+		ompl::base::MultiOptimizationObjective *obj = new ompl::base::MultiOptimizationObjective(si);
 		obj->addObjective(lengthObj, 10.0);
 		obj->addObjective(clearObj, 1.0);
 
@@ -422,7 +422,7 @@ private:
 void octomapCallback(const octomap_msgs::Octomap::ConstPtr &msg, planner *planner_ptr)
 {
 	ros::Rate rate(0.2);
-	// ros::service::call("/octomap_server/reset", srv);
+	//ros::service::call("/octomap_server/reset", srv);
 	octomap::OcTree *tree_oct = dynamic_cast<octomap::OcTree *>(octomap_msgs::msgToMap(*msg));
 	fcl::OcTree *tree = new fcl::OcTree(std::shared_ptr<const octomap::OcTree>(tree_oct));
 	planner_ptr->updateMap(std::shared_ptr<fcl::CollisionGeometry>(tree));
@@ -432,99 +432,119 @@ void octomapCallback(const octomap_msgs::Octomap::ConstPtr &msg, planner *planne
 void posCb(const geometry_msgs::PoseStamped::ConstPtr &pos, planner *planner_ptr)
 {
 
-	planner_ptr->checkPos(pos->pose.position.x, pos->pose.position.y, pos->pose.position.z);
+	planner_ptr->checkPos(pos->pose.position.x,
+						  pos->pose.position.y,
+						  pos->pose.position.z);
 }
 void odomCb(const geometry_msgs::PoseStamped::ConstPtr &msg, planner *planner_ptr)
 {
-	planner_ptr->setStart(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+	planner_ptr->setStart(msg->pose.position.x,
+						  msg->pose.position.y,
+						  msg->pose.position.z);
+
 	planner_ptr->init_start();
 }
 void goalCb(const geometry_msgs::PoseStamped::ConstPtr &msg, planner *planner_ptr)
 {
-	planner_ptr->setGoal(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z,
-						 msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z, msg->pose.orientation.w);
+	planner_ptr->setGoal(msg->pose.position.x,
+						 msg->pose.position.y, 
+						 msg->pose.position.z,
+						 msg->pose.orientation.x,
+						 msg->pose.orientation.y,
+						 msg->pose.orientation.z,
+						 msg->pose.orientation.w);
 }
 
-void state_callback(const mavros_msgs::State::ConstPtr &msg)
+void state_cb(const mavros_msgs::State::ConstPtr &msg)
 {
+	mavros_msgs::State current_state;
 	current_state = *msg;
 }
+
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "octomap_planner");
 	ros::NodeHandle n;
-
 	planner planner_object;
 	ros::MultiThreadedSpinner spinner(4);
-	ros::Subscriber octree_sub = n.subscribe<octomap_msgs::Octomap>("/octomap_binary", 1, boost::bind(&octomapCallback, _1, &planner_object));		  //
-	ros::Subscriber odom_sub = n.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, boost::bind(&odomCb, _1, &planner_object)); //
-	ros::Subscriber goal_sub = n.subscribe<geometry_msgs::PoseStamped>("/move_base_simple/goal", 1, boost::bind(&goalCb, _1, &planner_object));
+
+	ros::Subscriber octree_sub = n.subscribe<octomap_msgs::Octomap>("/octomap_binary",
+																	1, boost::bind(&octomapCallback, _1, &planner_object));
+
+	ros::Subscriber odom_sub = n.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose",
+																		10, boost::bind(&odomCb, _1, &planner_object));
+
+	ros::Subscriber goal_sub = n.subscribe<geometry_msgs::PoseStamped>("/move_base_simple/goal",
+																		1, boost::bind(&goalCb, _1,	&planner_object));
+
+	ros::Subscriber position = n.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose",
+																		10, boost::bind(&posCb, _1, &planner_object));
+    
+	ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("mavros/state",
+																 1, state_cb);
+
+	ros::ServiceClient cl = n.serviceClient<mavros_msgs::SetMode>("/mavros/set_mode");
+
+	ros::ServiceClient arming_cl = n.serviceClient<mavros_msgs::CommandBool>("/mavros/cmd/arming");
+
+	ros::ServiceClient takeoff_cl = n.serviceClient<mavros_msgs::CommandTOL>("/mavros/cmd/takeoff");
+
 	vis_pub = n.advertise<visualization_msgs::Marker>("visualization_marker", 0);
 	traj_pub = n.advertise<geometry_msgs::PoseStamped>("/mavros/setpoint_position/local", 1);
 
 	// mavros/fake_gps/mocap/tf  ---> position of the drone using the ultra wide band coordinates.
-	ros::Subscriber position = n.subscribe<geometry_msgs::PoseStamped>("/mavros/local_position/pose", 10, boost::bind(&posCb, _1, &planner_object));
+
 	ros::Duration(0.5).sleep();
 
-	if (srv_setMode.)
-	{
-	}
+	mavros_msgs::SetMode srv_setMode;
+	mavros_msgs::CommandBool srv;
+	mavros_msgs::CommandTOL srv_takeoff;
+
 	////////////////////////////////////////////
 	/////////////////GUIDED/////////////////////
 	////////////////////////////////////////////
-	ros::ServiceClient cl = n.serviceClient<mavros_msgs::SetMode>("/mavros/set_mode");
-	mavros_msgs::SetMode srv_setMode;
-	srv_setMode.request.base_mode = 0;
-	srv_setMode.request.custom_mode = "GUIDED";
-	if (cl.call(srv_setMode))
-	{
-		ROS_ERROR("setmode send ok %d value:", srv_setMode.response.success);
+	if(!current_state.guided){
+		srv_setMode.request.base_mode = 0;
+		srv_setMode.request.custom_mode = "GUIDED";
+		if (cl.call(srv_setMode)){
+			ROS_ERROR("setmode send ok %d value:", srv_setMode.response.success);
+			} else {
+				ROS_ERROR("Failed SetMode");
+		}
+		ros::Duration(2).sleep();
 	}
-	else
-	{
-		ROS_ERROR("Failed SetMode");
-		return -1;
-	}
-	ros::Duration(2).sleep();
 
 	////////////////////////////////////////////
 	///////////////////ARM//////////////////////
 	////////////////////////////////////////////
-	ros::ServiceClient arming_cl = n.serviceClient<mavros_msgs::CommandBool>("/mavros/cmd/arming");
-	mavros_msgs::CommandBool srv;
-	srv.request.value = true;
-	if (arming_cl.call(srv))
-	{
-		ROS_ERROR("Arming drone ok value %d:", srv.response.success);
+	if(!current_state.armed){
+		srv.request.value = true;
+		if (arming_cl.call(srv)){
+			ROS_ERROR("Arming drone ok value %d:", srv.response.success);
+		} else {
+			ROS_ERROR("Failed arming or disarming");
+		}
+	ros::Duration(3).sleep();
 	}
-	else
-	{
-		ROS_ERROR("Failed arming or disarming");
+	
+	if(current_state.guided && current_state.armed){
+		///////RESET THE INITIAL MAP GENERATED/////////
+		ROS_INFO("Resetting the initial Octomap!");
+		ros::service::call("/octomap_server/reset", srv);
+		////////////////////////////////////////////
+		/////////////////TAKEOFF////////////////////
+		////////////////////////////////////////////
+		srv_takeoff.request.altitude = 2.0;
+		srv_takeoff.request.latitude = 0;
+		srv_takeoff.request.longitude = 0;
+		srv_takeoff.request.min_pitch = 0;
+		srv_takeoff.request.yaw = 0;
+		if (takeoff_cl.call(srv_takeoff)) {
+			ROS_INFO("Takeoff 2m sent.");
+		} else {
+			ROS_ERROR("Failed Takeoff");
+		}
 	}
-	ros::Duration(5).sleep();
-
-	///////RESET THE INITIAL MAP GENERATED/////////
-	ROS_INFO("Resetting the initial Octomap!");
-	ros::service::call("/octomap_server/reset", srv);
-
-	////////////////////////////////////////////
-	/////////////////TAKEOFF////////////////////
-	////////////////////////////////////////////
-	ros::ServiceClient takeoff_cl = n.serviceClient<mavros_msgs::CommandTOL>("/mavros/cmd/takeoff");
-	mavros_msgs::CommandTOL srv_takeoff;
-	srv_takeoff.request.altitude = 2.0;
-	srv_takeoff.request.latitude = 0;
-	srv_takeoff.request.longitude = 0;
-	srv_takeoff.request.min_pitch = 0;
-	srv_takeoff.request.yaw = 0;
-	if (takeoff_cl.call(srv_takeoff))
-	{
-		ROS_INFO("Takeoff 2m sent.");
-	}
-	else
-	{
-		ROS_ERROR("Failed Takeoff");
-	}
-
+	
 	spinner.spin();
 }
