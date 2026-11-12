@@ -1,0 +1,14 @@
+voxel_grid:
+  ros__parameters:
+    filter_field_name: z              # depth axis of the camera optical frame
+    filter_limit_min: 0.01
+    filter_limit_max: 4.0
+    filter_limit_negative: false
+    leaf_size: 0.10
+
+octomap_server:
+  ros__parameters:
+    resolution: 0.20
+    frame_id: map
+    sensor_model:
+      max_range: 4.0

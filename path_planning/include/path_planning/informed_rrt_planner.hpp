@@ -1,0 +1,144 @@
+// ROS 2 Informed-RRT* planner (OMPL + FCL + Octomap) driving a PX4 vehicle in offboard mode
+// through the uXRCE-DDS bridge (px4_msgs).
+#ifndef PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
+#define PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
+
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <Eigen/Core>
+#include <rclcpp/rclcpp.hpp>
+#include <tf2_ros/buffer.hpp>
+#include <tf2_ros/transform_listener.hpp>
+
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <octomap_msgs/msg/octomap.hpp>
+#include <std_srvs/srv/empty.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+
+#include <px4_msgs/msg/offboard_control_mode.hpp>
+#include <px4_msgs/msg/trajectory_setpoint.hpp>
+#include <px4_msgs/msg/vehicle_command.hpp>
+#include <px4_msgs/msg/vehicle_odometry.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
+
+#include "path_planning/collision_world.hpp"
+#include "path_planning/px4_frames.hpp"
+
+namespace path_planning
+{
+
+class InformedRRTPlanner : public rclcpp::Node
+{
+public:
+  explicit InformedRRTPlanner(const rclcpp::NodeOptions & options);
+  ~InformedRRTPlanner() override;
+
+private:
+  enum class FlightState { WAIT_FOR_ODOM, PRE_OFFBOARD, TAKEOFF, HOVER, PLANNING, FOLLOW_PATH };
+
+  struct PlanRequest
+  {
+    Eigen::Vector3d start;
+    Eigen::Vector3d goal;
+    uint64_t seq;
+  };
+
+  struct PlanResult
+  {
+    bool success;
+    std::vector<Eigen::Vector3d> waypoints;
+    uint64_t seq;
+  };
+
+  // ---- callbacks ----
+  void odometryCallback(const px4_msgs::msg::VehicleOdometry::SharedPtr msg);
+  void statusCallback(const px4_msgs::msg::VehicleStatus::SharedPtr msg);
+  void octomapCallback(const octomap_msgs::msg::Octomap::SharedPtr msg);
+  void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void controlLoop();
+  void replanCheck();
+
+  // ---- planning ----
+  void requestPlan(const Eigen::Vector3d & start, const Eigen::Vector3d & goal);
+  void plannerWorker();
+  PlanResult solve(const PlanRequest & req, std::shared_ptr<const CollisionWorld> world);
+  void publishPath(const std::vector<Eigen::Vector3d> & wps);
+  std::shared_ptr<const CollisionWorld> world() const;
+
+  // ---- PX4 ----
+  void publishOffboardControlMode();
+  void publishSetpoint(const Eigen::Vector3d & pos_world, double yaw_world);
+  void publishVehicleCommand(uint32_t command, float p1 = 0.f, float p2 = 0.f);
+  void engageOffboardAndArm();
+  bool isOffboard() const;
+  bool isArmed() const;
+  uint64_t px4Timestamp() const;
+  void enterHover(const Eigen::Vector3d & p);
+  void resetOctomap();
+
+  // ---- parameters ----
+  std::string map_frame_;
+  WorldFrame world_frame_;
+  Eigen::Vector3d bounds_min_, bounds_max_;
+  double solve_time_, planner_range_, check_resolution_, waypoint_spacing_, cost_threshold_;
+  double length_weight_, clearance_weight_;
+  bool k_nearest_, smooth_path_;
+  std::string objective_;
+  double acceptance_radius_, takeoff_altitude_, default_goal_altitude_, yaw_min_dist_;
+  bool auto_arm_, reset_octomap_on_takeoff_;
+  int target_system_, target_component_;
+  std::shared_ptr<fcl::CollisionGeometryd> robot_geom_;
+
+  // ---- ROS interfaces ----
+  rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr status_sub_;
+  rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_pub_;
+  rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
+  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr command_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr octomap_reset_client_;
+  rclcpp::TimerBase::SharedPtr control_timer_, replan_timer_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+  // ---- vehicle state (executor thread only) ----
+  FlightState state_{FlightState::WAIT_FOR_ODOM};
+  bool odom_received_{false}, status_received_{false};
+  Eigen::Vector3d position_{Eigen::Vector3d::Zero()};
+  double yaw_{0.0};
+  uint8_t nav_state_{0}, arming_state_{0};
+  Eigen::Vector3d hold_position_{Eigen::Vector3d::Zero()};
+  double hold_yaw_{0.0};
+  int offboard_counter_{0};
+  bool pilot_override_{false};
+  std::vector<Eigen::Vector3d> path_;
+  size_t wp_idx_{0};
+  std::optional<Eigen::Vector3d> goal_;
+  bool goal_pending_{false};
+
+  // ---- shared with planner thread ----
+  mutable std::mutex world_mutex_;
+  std::shared_ptr<const CollisionWorld> world_;
+  std::mutex plan_mutex_;
+  std::condition_variable plan_cv_;
+  std::optional<PlanRequest> plan_request_;
+  std::optional<PlanResult> plan_result_;
+  std::atomic<uint64_t> plan_seq_{0};
+  std::atomic<bool> shutdown_{false};
+  std::thread planner_thread_;
+};
+
+}  // namespace path_planning
+
+#endif  // PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
