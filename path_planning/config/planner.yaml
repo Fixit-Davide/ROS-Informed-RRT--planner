@@ -25,6 +25,7 @@ path_planning:
       collision_check_resolution: 0.1 # [m]
       waypoint_spacing: 1.0           # [m] path is re-interpolated to this spacing (0 = off)
       smooth: true                    # B-spline smoothing (kept only if collision free)
+      max_attempts: 3                 # failed plans are retried with twice the solve time
 
     control:
       rate_hz: 20.0                   # offboard heartbeat + setpoint rate (PX4 needs > 2 Hz)

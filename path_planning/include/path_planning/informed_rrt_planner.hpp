@@ -50,6 +50,8 @@ private:
     Eigen::Vector3d start;
     Eigen::Vector3d goal;
     uint64_t seq;
+    double solve_time;  // [s]
+    int attempt;        // 1 for the first try
   };
 
   struct PlanResult
@@ -68,10 +70,10 @@ private:
   void replanCheck();
 
   // ---- planning ----
-  void requestPlan(const Eigen::Vector3d & start, const Eigen::Vector3d & goal);
+  void requestPlan(const Eigen::Vector3d & start, const Eigen::Vector3d & goal, int attempt = 1);
   // Replan while flying: keep following the current trajectory (stopping the reference
   // at brake_s if given) and plan from the point it will reach when the plan is ready.
-  void replanWhileMoving(std::optional<double> brake_s);
+  void replanWhileMoving(std::optional<double> brake_s, int attempt = 1);
   // Start following waypoints; while moving, the new path is spliced onto the reference.
   void startTrajectory(std::vector<Eigen::Vector3d> waypoints);
   void followTrajectory(double dt);
@@ -105,6 +107,7 @@ private:
   double acceptance_radius_, takeoff_altitude_, default_goal_altitude_;
   TrajectoryLimits traj_limits_;
   double max_yaw_rate_, lag_soft_, lag_max_, stop_margin_;
+  int max_attempts_;
   bool auto_arm_, reset_octomap_on_takeoff_;
   int target_system_, target_component_;
   std::shared_ptr<fcl::CollisionGeometryd> robot_geom_;
@@ -145,6 +148,7 @@ private:
   std::optional<double> brake_s_;      // stop the reference before this arc length
   double replan_from_s_{0.0};          // arc length of the replan start on traj_
   bool stop_and_hover_{false};         // planning failed: brake along the path, then hover
+  int current_attempt_{1};             // attempt number of the running plan request
   std::optional<Eigen::Vector3d> goal_;
   bool goal_pending_{false};
 

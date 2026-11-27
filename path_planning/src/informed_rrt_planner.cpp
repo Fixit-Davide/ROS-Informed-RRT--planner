@@ -103,6 +103,7 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   lag_soft_ = declare_parameter<double>("control.tracking_lag_soft", 1.0);
   lag_max_ = declare_parameter<double>("control.tracking_lag_max", 2.0);
   stop_margin_ = declare_parameter<double>("control.stop_margin", 0.5);
+  max_attempts_ = static_cast<int>(declare_parameter<int>("planner.max_attempts", 3));
   auto_arm_ = declare_parameter<bool>("control.auto_arm", false);
   reset_octomap_on_takeoff_ = declare_parameter<bool>("control.reset_octomap_on_takeoff", true);
 
@@ -278,7 +279,16 @@ void InformedRRTPlanner::controlLoop()
     startTrajectory(std::move(result->waypoints));
   } else if (result && goal_) {
     const bool moving = state_ == FlightState::FOLLOW_PATH;
-    if (moving) {
+    if (current_attempt_ < max_attempts_) {
+      RCLCPP_WARN(
+        get_logger(), "No solution (attempt %d/%d): retrying with %.1f s", current_attempt_,
+        max_attempts_, solve_time_ * std::pow(2.0, current_attempt_));
+      if (moving) {
+        replanWhileMoving(brake_s_, current_attempt_ + 1);
+      } else {
+        requestPlan(hold_position_, *goal_, current_attempt_ + 1);
+      }
+    } else if (moving) {
       RCLCPP_WARN(get_logger(), "No solution found: stopping along the path, then hovering");
       const double stop = s_ref_ + v_ref_ * v_ref_ / (2.0 * traj_limits_.max_accel);
       brake_s_ = brake_s_ ? std::min(*brake_s_, stop) : stop;
@@ -415,7 +425,7 @@ void InformedRRTPlanner::replanCheck()
   }
 }
 
-void InformedRRTPlanner::replanWhileMoving(std::optional<double> brake_s)
+void InformedRRTPlanner::replanWhileMoving(std::optional<double> brake_s, int attempt)
 {
   if (!goal_) {return;}
   if (brake_s) {brake_s_ = brake_s_ ? std::min(*brake_s_, *brake_s) : *brake_s;}
@@ -423,9 +433,9 @@ void InformedRRTPlanner::replanWhileMoving(std::optional<double> brake_s)
   // Plan from where the reference will be when the plan arrives (it keeps moving meanwhile),
   // but not beyond the point where it has to stop.
   const double s_stop = brake_s_ ? *brake_s_ : traj_.length();
-  const double t_plan = solve_time_ + 0.2;
+  const double t_plan = solve_time_ * std::pow(2.0, attempt - 1) + 0.2;
   replan_from_s_ = std::clamp(s_ref_ + v_ref_ * t_plan, s_ref_, std::max(s_ref_, s_stop));
-  requestPlan(traj_.position(replan_from_s_), *goal_);
+  requestPlan(traj_.position(replan_from_s_), *goal_, attempt);
 }
 
 void InformedRRTPlanner::startTrajectory(std::vector<Eigen::Vector3d> waypoints)
@@ -555,10 +565,13 @@ std::shared_ptr<const CollisionWorld> InformedRRTPlanner::world() const
   return world_;
 }
 
-void InformedRRTPlanner::requestPlan(const Eigen::Vector3d & start, const Eigen::Vector3d & goal)
+void InformedRRTPlanner::requestPlan(
+  const Eigen::Vector3d & start, const Eigen::Vector3d & goal, int attempt)
 {
   std::lock_guard<std::mutex> lk(plan_mutex_);
-  plan_request_ = PlanRequest{start, goal, ++plan_seq_};
+  current_attempt_ = attempt;
+  plan_request_ = PlanRequest{
+    start, goal, ++plan_seq_, solve_time_ * std::pow(2.0, attempt - 1), attempt};
   plan_result_.reset();
   plan_cv_.notify_one();
 }
@@ -668,7 +681,7 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
   // Abort early if a newer request supersedes this one.
   const uint64_t seq = req.seq;
   auto ptc = ob::plannerOrTerminationCondition(
-    ob::timedPlannerTerminationCondition(solve_time_),
+    ob::timedPlannerTerminationCondition(req.solve_time),
     ob::PlannerTerminationCondition([this, seq]() {return shutdown_ || plan_seq_ != seq;}));
 
   const auto t0 = std::chrono::steady_clock::now();
