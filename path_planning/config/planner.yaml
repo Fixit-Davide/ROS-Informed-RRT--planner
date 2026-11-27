@@ -29,8 +29,25 @@ path_planning:
       min: [-20.0, -20.0, 0.5]
       max: [20.0, 20.0, 4.0]
 
-    planner:
-      solve_time: 1.0                 # [s], Informed-RRT* is anytime: uses the whole budget
+    # Two levels: a global A* route over the whole planning volume, then Informed-RRT* (the
+    # "planner" section) plans the flyable path along the first local.horizon metres of it,
+    # inside a window around that part of the route. The next segment is planned while the
+    # drone is still flying the current one.
+    global:
+      enabled: true                   # false: Informed-RRT* plans all the way to the goal
+      resolution: 0.4                 # [m] A* lattice step; keep it <= the robot box size
+      snap_radius: 1.2                # [m] an invalid start / goal is moved this far at most
+      max_expansions: 500000
+
+    local:
+      horizon: 10.0                   # [m] along the route: where each local segment ends
+      window_margin: 2.0              # [m] RRT* bounds = that part of the route +- this (x, y)
+      replan_distance: 5.0            # [m] plan the next segment (from this one's end) when this much is left
+      direct_if_visible: true         # straight line, no RRT* solve, when the local goal is in sight
+      fallback_to_route: true         # if RRT* finds nothing, fly the (collision-free) A* route instead
+
+    planner:                          # local Informed-RRT*
+      solve_time: 0.5                 # [s], Informed-RRT* is anytime: uses the whole budget
       range: 4.0                      # max edge length [m]
       k_nearest: false
       # path_length | path_length_cost_to_go | threshold | balanced (length + clearance, uses RRT*)

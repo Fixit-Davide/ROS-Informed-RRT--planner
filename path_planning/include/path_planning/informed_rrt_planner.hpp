@@ -32,6 +32,7 @@
 #include <px4_msgs/msg/vehicle_status.hpp>
 
 #include "path_planning/collision_world.hpp"
+#include "path_planning/global_planner.hpp"
 #include "path_planning/occupancy_map.hpp"
 #include "path_planning/path_trajectory.hpp"
 #include "path_planning/px4_frames.hpp"
@@ -59,9 +60,11 @@ private:
 
   struct PlanResult
   {
-    bool success;
-    std::vector<Eigen::Vector3d> waypoints;
-    uint64_t seq;
+    bool success{false};
+    std::vector<Eigen::Vector3d> waypoints;  // local Informed-RRT* path
+    uint64_t seq{0};
+    bool final{true};                        // the local path ends at the goal
+    std::vector<Eigen::Vector3d> route;      // global A* route (empty if global is off)
   };
 
   // ---- callbacks ----
@@ -78,11 +81,18 @@ private:
   // at brake_s if given) and plan from the point it will reach when the plan is ready.
   void replanWhileMoving(std::optional<double> brake_s, int attempt = 1);
   // Start following waypoints; while moving, the new path is spliced onto the reference.
-  void startTrajectory(std::vector<Eigen::Vector3d> waypoints);
+  // `final`: the waypoints end at the goal (otherwise the next segment is planned en route).
+  void startTrajectory(std::vector<Eigen::Vector3d> waypoints, bool final);
   void followTrajectory(double dt);
   void plannerWorker();
-  PlanResult solve(const PlanRequest & req, std::shared_ptr<const CollisionWorld> world);
+  // Global A* route to the goal, then a local Informed-RRT* path along its first
+  // local.horizon metres (or straight to the goal if global.enabled is false).
+  PlanResult plan(const PlanRequest & req, std::shared_ptr<const CollisionWorld> world);
+  PlanResult solveLocal(
+    const PlanRequest & req, std::shared_ptr<const CollisionWorld> world,
+    const Eigen::Vector3d & goal, const Eigen::Vector3d & lo, const Eigen::Vector3d & hi);
   void publishPath(const std::vector<Eigen::Vector3d> & wps);
+  void publishRoute(const std::vector<Eigen::Vector3d> & route);
   std::shared_ptr<const CollisionWorld> world() const;       // robot box: path checks
   std::shared_ptr<const CollisionWorld> planWorld() const;   // box + planning margin
 
@@ -114,6 +124,10 @@ private:
   TrajectoryLimits traj_limits_;
   double max_yaw_rate_, lag_soft_, lag_max_, stop_margin_;
   int max_attempts_;
+  bool global_enabled_;
+  GlobalPlannerOptions global_options_;
+  double local_horizon_, window_margin_, segment_replan_distance_;
+  bool direct_if_visible_, local_fallback_to_route_;
   bool auto_arm_, reset_map_on_takeoff_;
   int target_system_, target_component_;
   Eigen::Vector3d robot_size_;       // collision box [m]
@@ -129,6 +143,7 @@ private:
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr command_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr route_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
   rclcpp::Service<std_srvs::srv::Empty>::SharedPtr reset_map_srv_;
   rclcpp::TimerBase::SharedPtr control_timer_, replan_timer_;
@@ -165,6 +180,7 @@ private:
   std::optional<double> brake_s_;      // stop the reference before this arc length
   double replan_from_s_{0.0};          // arc length of the replan start on traj_
   bool stop_and_hover_{false};         // planning failed: brake along the path, then hover
+  bool segment_final_{true};           // traj_ ends at the goal (else: more segments follow)
   int current_attempt_{1};             // attempt number of the running plan request
   std::optional<Eigen::Vector3d> goal_;
   bool goal_pending_{false};

@@ -9,7 +9,8 @@ Autonomous 3D navigation with obstacle avoidance for a PX4 multirotor on ROS 2.
 Give it a goal, for example with RViz2's **2D Goal Pose**. The planner:
 
 1. Builds a 3D occupancy map from a lidar as the drone flies.
-2. Plans a collision-free path with Informed-RRT*.
+2. Plans a coarse global route to the goal with A*, and the flyable path along it with
+   Informed-RRT*, a few metres at a time.
 3. Flies the path smoothly in PX4 OFFBOARD mode.
 4. Replans in flight whenever newly mapped obstacles block the path.
 
@@ -97,16 +98,55 @@ A new voxel therefore has to intrude more than the margin into a path's clearanc
 path counts as blocked. Without this hysteresis, every scan near a wall would trigger a
 replan, because RRT* paths hug the boundary they are planned with.
 
-### 3. Path planning (OMPL Informed-RRT*)
+### 3. Path planning: global A* route, local Informed-RRT* path
 
-Planning runs on a background thread, so the setpoint stream to PX4 never stops. It searches
-the 3D position space (R³) inside the box `bounds.min`–`bounds.max`, by default
-40 × 40 m and 0.5–4 m in altitude. Yaw is not part of the search: the drone yaws along the
-path.
+Planning runs on a background thread, so the setpoint stream to PX4 never stops. It plans in
+the 3D position space (R³) inside the box `bounds.min`–`bounds.max`, by default 40 × 40 m and
+0.5–4 m in altitude. Yaw is not part of the search: the drone yaws along the path. Each plan
+request has two levels.
 
-- **Planner:** [OMPL](https://ompl.kavrakilab.org/)'s Informed-RRT*. It's an anytime planner:
-  it uses the whole `planner.solve_time` (1 s) budget, and once it has a solution it samples
-  only inside the ellipsoid that could still improve on it.
+**Global route (A*, `global.*`):**
+
+- **Search:** `GlobalPlanner` runs A* over the whole volume on a lattice of robot positions,
+  spaced `global.resolution` (0.4 m) apart.
+- **Valid nodes:** a node is usable when the planning box fits there.
+- **Moves:** each node connects to its 26 neighbours. A diagonal move must not cut a corner:
+  every lattice node on the corners of the cube it spans must be free too. This makes the
+  move exactly collision free, as long as the step is no larger than the box.
+- **Snapping:** a start or goal inside an inflated obstacle is snapped to the nearest free
+  node within 1.2 m.
+- **Shortcutting:** the node chain is shortcut by line of sight, so the route is a few
+  straight segments.
+- **Cost:** in the walls world, A* takes 2–86 ms (14 ms on average), versus the 1 s that
+  Informed-RRT* spent on every request before.
+
+**Local path (Informed-RRT*, `local.*` and `planner.*`):**
+
+- **Local goal:** the point `local.horizon` (10 m) along the route, or the goal if it is
+  closer.
+- **Window:** RRT* samples only inside that part of the route's bounding box, plus
+  `local.window_margin` (2 m) on each side and the full altitude band.
+- **Straight lines:** if the straight line from the start to the local goal is free
+  (`local.direct_if_visible`), it is the path. Informed-RRT* would only converge to it, so
+  the solve is skipped. On the walls tours that covered 14 of 32 plans.
+- **Planner:** otherwise [OMPL](https://ompl.kavrakilab.org/)'s Informed-RRT* plans within
+  the window. It's an anytime planner: it uses the whole `planner.solve_time` (0.5 s) budget,
+  and once it has a solution it samples only inside the ellipsoid that could still improve
+  on it.
+- **Next segment:** when less than `local.replan_distance` (5 m) of a segment is left, the
+  next one is planned from the segment's end, which lies on the route. The drone flies the
+  current segment to its end, the two meet roughly in line, and every join on the walls tours
+  kept cruise speed (1.35–1.5 m/s). Only the last segment ends at the goal.
+- **Fallback:** if Informed-RRT* finds no exact path in the window
+  (`local.fallback_to_route`, on by default), the drone flies the A* route up to the local
+  goal instead. The route is already collision free for the planning box, so this is safe,
+  and it keeps the drone moving in tight spaces such as a maze, where RRT* can run out of
+  time between close walls.
+
+`global.enabled: false` turns the global level off. Informed-RRT* then plans all the way to
+the goal over the whole volume, as before.
+
+Common to both modes:
 - **Objective** (`planner.objective`):
   - `path_length`: shortest path.
   - `path_length_cost_to_go`: shortest path, with a cost-to-go heuristic. This is the default.
@@ -117,7 +157,37 @@ path.
 - **Post-processing:** the solution is shortcut, smoothed with a B-spline (kept only if still
   collision-free) and re-sampled every `planner.waypoint_spacing` (1 m).
 - **Retries:** a failed plan is retried up to `planner.max_attempts` (3) times, each with
-  twice the previous solve time (1, 2, then 4 s).
+  twice the previous solve time (0.5, 1, then 2 s).
+
+Compared with Informed-RRT* to the goal (1 s solves), three SITL walls tours gave:
+
+| | RRT* to the goal | global A* + local RRT* |
+|---|---|---|
+| Open 10 m legs | 10.5 s (1 s solve before moving) | 10.0 s (straight line, about 15 ms) |
+| Legs through the walls | 26.1 s mean, 22.8–33.1 s, up to 42 m flown | 24.5 s mean, 22.7–27.1 s, 26–27 m |
+| Time spent in RRT* | 20 s over 20 solves | 9 s over 18 solves |
+| Replans because the path was blocked | 8 | 6 |
+
+**Obstacle course.** The `obstacle_course` world (see [Run](#in-simulation-px4-sitl--gazebo))
+has a closed maze of 5 m walls, a field of 36 pillars, a wall with a window and a low wall.
+A four-goal mission reached every goal:
+
+| Leg | Time | Notes |
+|---|---|---|
+| Into the maze | 129 s, 145 m | the route fallback was used 3 times |
+| Through the pillar field | 22–55 s | |
+| Through the window | 23–26 s | |
+| Over the low wall | 16.5 s | |
+
+The maze leg is long because A* treats unmapped space as free: the first route went round the
+outside of the closed maze, and the drone found the entrance only after mapping the walls.
+
+![Gazebo and RViz in the pillar field](docs/images/obstacle_course_forest.jpg)
+*Pillar field. Left Gazebo, right RViz: A* route in cyan, local Informed-RRT\* path in green,
+flown track in orange, mapped obstacles as voxels.*
+
+![Gazebo and RViz in the maze](docs/images/obstacle_course_maze.jpg)
+*Inside the maze; the track shows the first detour round the outside.*
 
 ### 4. Path following
 
@@ -152,7 +222,7 @@ map. When newly mapped obstacles block it:
 - **The drone keeps flying.** It brakes along the path only if the blocked section is within
   reach, stopping `control.stop_margin` (0.5 m) before it.
 - **The new plan starts ahead.** It starts at the point the reference will have reached when
-  the plan is ready.
+  the plan is ready, with a fresh global route from there.
 - **The new path is spliced on.** It is joined onto the current reference, so position and
   speed stay continuous.
 
@@ -195,20 +265,23 @@ path_planning/
 │   ├── informed_rrt_planner.hpp   node: state machine, planning thread, PX4 interface
 │   ├── occupancy_map.hpp          Bonxai lidar map + immutable occupied-voxel snapshots
 │   ├── collision_world.hpp        robot box collision and clearance queries on a snapshot
+│   ├── global_planner.hpp         A* route on a lattice of robot positions + shortcutting
 │   ├── path_trajectory.hpp        arc-length path, speed profile, projection
 │   └── px4_frames.hpp             NED/FRD <-> map frame (NWU or ENU) conversions
 ├── src/                           implementations of the above
-├── test/                          gtests: PathTrajectory, OccupancyMap, CollisionWorld
+├── test/                          gtests: PathTrajectory, OccupancyMap, CollisionWorld, GlobalPlanner
 ├── config/
 │   ├── planner.yaml               all planner and mapping parameters (commented)
-│   └── planner.rviz               RViz2 view: map, cloud, path, drone
+│   └── planner.rviz               RViz2 view: map, cloud, route, path, drone
 ├── launch/
 │   ├── planner.launch.py          planner (+ mapping, Gazebo bridge, RViz2 options)
 │   └── mapping.launch.py          drone_pose, lidar tf, ros_gz_bridge
-├── sim/
+└── sim/
     ├── models/x500_lidar_3d/      Gazebo model: PX4 x500 + 16-channel 3D lidar
-│   └── run_px4_sitl.sh            starts PX4 SITL with that model in the walls world
+    ├── worlds/obstacle_course.sdf maze, pillar field, window wall and low wall
+    └── run_px4_sitl.sh            starts PX4 SITL with that model (walls world by default)
 docs/bonxai_eval/                  Bonxai vs octomap benchmark, scripts and results
+docs/images/                       screenshots used in this README
 ```
 
 ## Requirements
@@ -250,6 +323,7 @@ Every terminal needs `source ~/ros2_ws/install/setup.bash` and
 ```bash
 ros2 run rmw_zenoh_cpp rmw_zenohd                     # Zenoh router: PX4 and ROS 2 meet here
 path_planning/sim/run_px4_sitl.sh                     # PX4 + Gazebo, x500_lidar_3d in the walls world
+# or: PX4_GZ_WORLD=obstacle_course path_planning/sim/run_px4_sitl.sh
 ros2 launch path_planning planner.launch.py use_sim_time:=true auto_arm:=true gz_bridge:=true rviz:=true
 ```
 
@@ -258,7 +332,10 @@ ros2 launch path_planning planner.launch.py use_sim_time:=true auto_arm:=true gz
 - `run_px4_sitl.sh` links the lidar model into PX4 and starts SITL with PX4's Zenoh
   middleware.
 - Set `HEADLESS=1` to run without the Gazebo window, or `PX4_GZ_WORLD=<name>` to pick another
-  world.
+  world. The worlds in `path_planning/sim/worlds` (`obstacle_course`) are linked into PX4, so
+  they can be picked by name.
+- Arguments are passed to the `px4` binary. Add `-d` when running it without a terminal (for
+  example under `nohup`); otherwise PX4's shell prints its prompt in a loop and fills the log.
 
 **What the launch options do:**
 
@@ -304,7 +381,8 @@ Goals outside `bounds` are clamped into them.
 | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | out |
 | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | out |
 | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | out |
-| `~/planned_path` | `nav_msgs/Path` | out (transient local) |
+| `~/planned_path` | `nav_msgs/Path` | out (transient local), local path |
+| `~/global_path` | `nav_msgs/Path` | out (transient local), A* route |
 | `~/path_markers` | `visualization_msgs/MarkerArray` | out (transient local) |
 | `~/occupied_voxels` | `visualization_msgs/MarkerArray` | out (transient local), map cubes |
 | `~/reset_map` | `std_srvs/Empty` | service: clear the map (also done on takeoff) |
