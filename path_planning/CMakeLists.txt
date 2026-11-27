@@ -31,6 +31,7 @@ find_package(ompl REQUIRED)
 add_library(${PROJECT_NAME}_map STATIC
   src/occupancy_map.cpp
   src/collision_world.cpp
+  src/global_planner.cpp
 )
 set_target_properties(${PROJECT_NAME}_map PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(${PROJECT_NAME}_map PUBLIC
@@ -93,6 +94,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_occupancy_map test/test_occupancy_map.cpp)
   target_link_libraries(test_occupancy_map ${PROJECT_NAME}_map)
+
+  ament_add_gtest(test_global_planner test/test_global_planner.cpp)
+  target_link_libraries(test_global_planner ${PROJECT_NAME}_map)
 endif()
 
 ament_package()
