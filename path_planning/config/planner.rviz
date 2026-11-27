@@ -52,9 +52,10 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
         Depth: 1
-      Color: 255; 170; 0
-      Line Style: Lines
-      Alpha: 0.8
+      Color: 0; 200; 255
+      Line Style: Billboards
+      Line Width: 0.05
+      Alpha: 0.9
     - Class: rviz_default_plugins/Path
       Name: Planned path
       Enabled: true
