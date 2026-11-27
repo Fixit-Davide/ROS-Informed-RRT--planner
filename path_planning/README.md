@@ -2,7 +2,7 @@
 
 Informed-RRT* collision-avoidance planner for multirotors:
 **Bonxai** (occupancy map built in the node from a 3D lidar) → box collision checks →
-**OMPL** (Informed-RRT*), commanding **PX4** in OFFBOARD mode over `px4_msgs` (PX4's native
+**A*** global route → **OMPL** Informed-RRT* local path along it, commanding **PX4** in OFFBOARD mode over `px4_msgs` (PX4's native
 Zenoh client with `rmw_zenoh_cpp`, or the uXRCE-DDS bridge).
 Replaces the ROS 1 / MAVROS / ArduPilot version.
 
@@ -48,7 +48,7 @@ so `use_sim_time:=true` is required). PX4 refuses to arm without a GCS link whil
 
 ### Visualisation
 
-`rviz:=true` opens `config/planner.rviz`: tf, lidar cloud, occupied map voxels,
+`rviz:=true` opens `config/planner.rviz`: tf, lidar cloud, occupied map voxels, global route,
 planned path and waypoints, flown track (`/vehicle_path`) and pose. The map frame is NWU,
 so the view is mirrored with respect to Gazebo's ENU world.
 
@@ -61,9 +61,19 @@ so the view is mirrored with respect to Gazebo's ENU world.
 1. Streams `OffboardControlMode` + `TrajectorySetpoint` at `control.rate_hz`.
 2. Once in OFFBOARD and armed (by the pilot, or by the node if `control.auto_arm`),
    resets the map and takes off to `control.takeoff_altitude` (skipped if already flying).
-3. On a goal: plans in a background thread (setpoint stream never stops), B-spline smooths
-   and re-interpolates to `planner.waypoint_spacing`. A failed plan is retried up to
-   `planner.max_attempts` times, each with twice the solve time.
+3. On a goal: plans in a background thread (setpoint stream never stops), in two levels:
+   - **Global (`global.*`):** A* on a `global.resolution` (0.4 m) lattice of robot positions
+     over the whole `bounds`, 26-connected without corner cutting, then line-of-sight
+     shortcutting. It takes milliseconds.
+   - **Local (`local.*`, `planner.*`):** Informed-RRT* to the route point `local.horizon`
+     (10 m) ahead, in a window of `local.window_margin` around that part of the route. If
+     that point is in plain sight, the straight line is used and the solve is skipped. Paths
+     are B-spline smoothed and re-interpolated to `planner.waypoint_spacing`.
+   - **Next segment:** when `local.replan_distance` (5 m) of a segment is left, the next one
+     is planned from the segment's end. Only the last one ends at the goal.
+
+   `global.enabled: false` plans with Informed-RRT* straight to the goal. A failed plan is
+   retried up to `planner.max_attempts` times, each with twice the solve time.
 4. Flies the path without stopping at waypoints (see *Path following*).
 5. At `control.replan_check_rate_hz` the rest of the path is checked against the newest
    map. If it is blocked, the drone keeps flying while it replans, braking only if the
@@ -100,7 +110,8 @@ accelerates once, cruises at 1.5 m/s and stops once at the goal (16.6 s -> 10.5 
 | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | out |
 | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | out |
 | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | out |
-| `~/planned_path` | `nav_msgs/Path` | out |
+| `~/planned_path` | `nav_msgs/Path` | out (local path) |
+| `~/global_path` | `nav_msgs/Path` | out (A* route) |
 | `~/path_markers` | `visualization_msgs/MarkerArray` | out |
 | `~/occupied_voxels` | `visualization_msgs/MarkerArray` | out (`mapping.publish_rate_hz`) |
 | `~/reset_map` | `std_srvs/Empty` | service: clear the map |
