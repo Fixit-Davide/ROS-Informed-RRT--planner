@@ -1,5 +1,5 @@
 // ROS 2 Informed-RRT* planner (OMPL + FCL + Octomap) driving a PX4 vehicle in offboard mode
-// through the uXRCE-DDS bridge (px4_msgs).
+// over px4_msgs (PX4 Zenoh client with rmw_zenoh, or the uXRCE-DDS bridge).
 #ifndef PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
 #define PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
 
@@ -30,6 +30,7 @@
 #include <px4_msgs/msg/vehicle_status.hpp>
 
 #include "path_planning/collision_world.hpp"
+#include "path_planning/path_trajectory.hpp"
 #include "path_planning/px4_frames.hpp"
 
 namespace path_planning
@@ -68,6 +69,12 @@ private:
 
   // ---- planning ----
   void requestPlan(const Eigen::Vector3d & start, const Eigen::Vector3d & goal);
+  // Replan while flying: keep following the current trajectory (stopping the reference
+  // at brake_s if given) and plan from the point it will reach when the plan is ready.
+  void replanWhileMoving(std::optional<double> brake_s);
+  // Start following waypoints; while moving, the new path is spliced onto the reference.
+  void startTrajectory(std::vector<Eigen::Vector3d> waypoints);
+  void followTrajectory(double dt);
   void plannerWorker();
   PlanResult solve(const PlanRequest & req, std::shared_ptr<const CollisionWorld> world);
   void publishPath(const std::vector<Eigen::Vector3d> & wps);
@@ -75,7 +82,10 @@ private:
 
   // ---- PX4 ----
   void publishOffboardControlMode();
-  void publishSetpoint(const Eigen::Vector3d & pos_world, double yaw_world);
+  void publishSetpoint(
+    const Eigen::Vector3d & pos_world, double yaw_world,
+    const std::optional<Eigen::Vector3d> & vel_world = std::nullopt,
+    const std::optional<Eigen::Vector3d> & acc_world = std::nullopt);
   void publishVehicleCommand(uint32_t command, float p1 = 0.f, float p2 = 0.f);
   void engageOffboardAndArm();
   bool isOffboard() const;
@@ -92,7 +102,9 @@ private:
   double length_weight_, clearance_weight_;
   bool k_nearest_, smooth_path_;
   std::string objective_;
-  double acceptance_radius_, takeoff_altitude_, default_goal_altitude_, yaw_min_dist_;
+  double acceptance_radius_, takeoff_altitude_, default_goal_altitude_;
+  TrajectoryLimits traj_limits_;
+  double max_yaw_rate_, lag_soft_, lag_max_, stop_margin_;
   bool auto_arm_, reset_octomap_on_takeoff_;
   int target_system_, target_component_;
   std::shared_ptr<fcl::CollisionGeometryd> robot_geom_;
@@ -122,8 +134,17 @@ private:
   double hold_yaw_{0.0};
   int offboard_counter_{0};
   bool pilot_override_{false};
-  std::vector<Eigen::Vector3d> path_;
-  size_t wp_idx_{0};
+  std::vector<Eigen::Vector3d> path_;  // = traj_.points(), checked by replanCheck()
+  size_t wp_idx_{0};                   // next vertex ahead of the reference
+  PathTrajectory traj_;
+  double s_ref_{0.0}, v_ref_{0.0};     // reference arc length [m] and speed [m/s]
+  double a_ref_{0.0};                  // reference along-path acceleration [m/s^2]
+  double yaw_ref_{0.0};
+  std::optional<rclcpp::Time> last_tick_;
+  bool replan_pending_{false};         // a replan was requested while following the path
+  std::optional<double> brake_s_;      // stop the reference before this arc length
+  double replan_from_s_{0.0};          // arc length of the replan start on traj_
+  bool stop_and_hover_{false};         // planning failed: brake along the path, then hover
   std::optional<Eigen::Vector3d> goal_;
   bool goal_pending_{false};
 

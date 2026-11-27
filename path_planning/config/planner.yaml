@@ -32,7 +32,16 @@ path_planning:
       acceptance_radius: 0.3          # [m]
       takeoff_altitude: 2.0           # [m] above the arming position
       default_goal_altitude: 2.0      # [m] used when the goal z is below bounds.min (RViz 2D goal)
-      yaw_min_distance: 0.3           # [m] don't re-aim yaw closer than this to the waypoint
+      # Path following: a reference moves along the path with bounded acceleration and PX4 gets
+      # position + velocity feed-forward, so the drone flies through waypoints without stopping.
+      max_speed: 1.5                  # [m/s]
+      max_accel: 1.0                  # [m/s^2] along the path (braking uses up to 2x)
+      max_lateral_accel: 1.0          # [m/s^2] sets the corner speeds
+      max_jerk: 2.0                   # [m/s^3] smooths the start and end of accelerations
+      max_yaw_rate: 1.0               # [rad/s] yaw follows the path tangent
+      tracking_lag_soft: 1.0          # [m] reference slows down above this distance from the drone
+      tracking_lag_max: 2.0           # [m] ... and waits for the drone at this distance
+      stop_margin: 0.5                # [m] stop this far before a newly blocked path section
       auto_arm: false                 # true: node switches to OFFBOARD and arms by itself (SITL)
       reset_octomap_on_takeoff: true
 

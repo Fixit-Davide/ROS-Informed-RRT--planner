@@ -95,7 +95,14 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   acceptance_radius_ = declare_parameter<double>("control.acceptance_radius", 0.3);
   takeoff_altitude_ = declare_parameter<double>("control.takeoff_altitude", 2.0);
   default_goal_altitude_ = declare_parameter<double>("control.default_goal_altitude", 2.0);
-  yaw_min_dist_ = declare_parameter<double>("control.yaw_min_distance", 0.3);
+  traj_limits_.max_speed = declare_parameter<double>("control.max_speed", 1.5);
+  traj_limits_.max_accel = declare_parameter<double>("control.max_accel", 1.0);
+  traj_limits_.max_lateral_accel = declare_parameter<double>("control.max_lateral_accel", 1.0);
+  traj_limits_.max_jerk = declare_parameter<double>("control.max_jerk", 2.0);
+  max_yaw_rate_ = declare_parameter<double>("control.max_yaw_rate", 1.0);
+  lag_soft_ = declare_parameter<double>("control.tracking_lag_soft", 1.0);
+  lag_max_ = declare_parameter<double>("control.tracking_lag_max", 2.0);
+  stop_margin_ = declare_parameter<double>("control.stop_margin", 0.5);
   auto_arm_ = declare_parameter<bool>("control.auto_arm", false);
   reset_octomap_on_takeoff_ = declare_parameter<bool>("control.reset_octomap_on_takeoff", true);
 
@@ -233,13 +240,13 @@ void InformedRRTPlanner::goalCallback(const geometry_msgs::msg::PoseStamped::Sha
   goal_ = g;
   RCLCPP_INFO(get_logger(), "New goal: [%.2f, %.2f, %.2f]", g.x(), g.y(), g.z());
 
-  if (state_ == FlightState::HOVER || state_ == FlightState::FOLLOW_PATH ||
-    state_ == FlightState::PLANNING)
-  {
-    hold_position_ = position_;
-    hold_yaw_ = yaw_;
+  if (state_ == FlightState::FOLLOW_PATH && !traj_.empty()) {
+    // Keep flying the current path while the new one is planned, then splice onto it.
+    brake_s_.reset();
+    replanWhileMoving(std::nullopt);
+  } else if (state_ == FlightState::HOVER || state_ == FlightState::PLANNING) {
     state_ = FlightState::PLANNING;
-    requestPlan(position_, g);
+    requestPlan(hold_position_, g);
   } else {
     goal_pending_ = true;
     RCLCPP_INFO(get_logger(), "Vehicle not airborne yet: planning will start after takeoff");
@@ -254,21 +261,33 @@ void InformedRRTPlanner::controlLoop()
 {
   if (!odom_received_) {return;}
 
+  const rclcpp::Time t_now = now();
+  const double dt = last_tick_ ? std::clamp((t_now - *last_tick_).seconds(), 0.0, 0.2) : 0.0;
+  last_tick_ = t_now;
+
   // Collect planner results.
+  std::optional<PlanResult> result;
   {
     std::lock_guard<std::mutex> lk(plan_mutex_);
-    if (plan_result_ && plan_result_->seq == plan_seq_ && state_ == FlightState::PLANNING) {
-      if (plan_result_->success) {
-        path_ = std::move(plan_result_->waypoints);
-        wp_idx_ = path_.size() > 1 ? 1 : 0;
-        state_ = FlightState::FOLLOW_PATH;
-        RCLCPP_INFO(get_logger(), "Following path with %zu waypoints", path_.size());
-      } else {
-        RCLCPP_WARN(get_logger(), "No solution found, hovering");
-        enterHover(hold_position_);
-      }
-    }
+    const bool waiting = state_ == FlightState::PLANNING ||
+      (state_ == FlightState::FOLLOW_PATH && replan_pending_);
+    if (plan_result_ && plan_result_->seq == plan_seq_ && waiting) {result = std::move(plan_result_);}
     plan_result_.reset();
+  }
+  if (result && result->success) {
+    startTrajectory(std::move(result->waypoints));
+  } else if (result && goal_) {
+    const bool moving = state_ == FlightState::FOLLOW_PATH;
+    if (moving) {
+      RCLCPP_WARN(get_logger(), "No solution found: stopping along the path, then hovering");
+      const double stop = s_ref_ + v_ref_ * v_ref_ / (2.0 * traj_limits_.max_accel);
+      brake_s_ = brake_s_ ? std::min(*brake_s_, stop) : stop;
+      replan_pending_ = false;
+      stop_and_hover_ = true;
+    } else {
+      RCLCPP_WARN(get_logger(), "No solution found, hovering");
+      enterHover(hold_position_);
+    }
   }
 
   // Pilot took over (mode switch / disarm): stop commanding the path.
@@ -277,6 +296,11 @@ void InformedRRTPlanner::controlLoop()
   {
     RCLCPP_WARN(get_logger(), "Vehicle left offboard mode or disarmed: path aborted");
     path_.clear();
+    traj_ = PathTrajectory();
+    v_ref_ = 0.0;
+    replan_pending_ = false;
+    brake_s_.reset();
+    stop_and_hover_ = false;
     ++plan_seq_;  // invalidate any running plan
     hold_position_ = position_;
     hold_yaw_ = yaw_;
@@ -339,27 +363,19 @@ void InformedRRTPlanner::controlLoop()
       publishSetpoint(hold_position_, hold_yaw_);
       break;
 
-    case FlightState::FOLLOW_PATH: {
-      const Eigen::Vector3d & wp = path_[wp_idx_];
-      const Eigen::Vector3d d = wp - position_;
-      if (d.head<2>().norm() > yaw_min_dist_) {hold_yaw_ = std::atan2(d.y(), d.x());}
-      publishSetpoint(wp, hold_yaw_);
-      if (d.norm() < acceptance_radius_) {
-        if (++wp_idx_ >= path_.size()) {
-          RCLCPP_INFO(get_logger(), "GOAL REACHED");
-          path_.clear();
-          goal_.reset();
-          enterHover(wp);
-        }
-      }
+    case FlightState::FOLLOW_PATH:
+      followTrajectory(dt);
       break;
-    }
   }
 }
 
 void InformedRRTPlanner::enterHover(const Eigen::Vector3d & p)
 {
   hold_position_ = p;
+  v_ref_ = 0.0;
+  brake_s_.reset();
+  stop_and_hover_ = false;
+  replan_pending_ = false;
   state_ = FlightState::HOVER;
   if (goal_pending_ && goal_) {
     goal_pending_ = false;
@@ -371,17 +387,161 @@ void InformedRRTPlanner::enterHover(const Eigen::Vector3d & p)
 // Checks the remaining part of the path against the latest map; replans if it is blocked.
 void InformedRRTPlanner::replanCheck()
 {
-  if (state_ != FlightState::FOLLOW_PATH || path_.empty() || !goal_) {return;}
-  const auto w = world();
-  bool blocked = !w->isSegmentFree(position_, path_[wp_idx_], check_resolution_);
-  for (size_t i = wp_idx_; !blocked && i + 1 < path_.size(); ++i) {
-    blocked = !w->isSegmentFree(path_[i], path_[i + 1], check_resolution_);
+  if (state_ != FlightState::FOLLOW_PATH || traj_.empty() || !goal_ || replan_pending_ ||
+    stop_and_hover_)
+  {
+    return;
   }
-  if (blocked) {
-    RCLCPP_WARN(get_logger(), "Path blocked by new obstacle: REPLANNING");
-    hold_position_ = position_;
-    state_ = FlightState::PLANNING;
-    requestPlan(position_, *goal_);
+  // Sample the rest of the path from the reference. Right after a replan next to a wall the
+  // reference can lie inside the inflated robot box while the path leads out of it: up to
+  // stop_margin of such leading in-collision path is tolerated. A block is a collision after
+  // the path has been free, or a leading collision that does not end within stop_margin.
+  const auto w = world();
+  const double step = std::max(check_resolution_, 0.05);
+  std::optional<double> s_block;
+  bool seen_free = false;
+  for (double s = s_ref_; s <= traj_.length() + 1e-9; s += step) {
+    if (w->isFree(traj_.position(s))) {
+      seen_free = true;
+    } else if (seen_free || s - s_ref_ > stop_margin_) {
+      s_block = seen_free ? s : s_ref_;
+      break;
+    }
+  }
+  if (s_block) {
+    RCLCPP_WARN(
+      get_logger(), "Path blocked %.1f m ahead: REPLANNING", std::max(0.0, *s_block - s_ref_));
+    replanWhileMoving(std::max(s_ref_, *s_block - stop_margin_));
+  }
+}
+
+void InformedRRTPlanner::replanWhileMoving(std::optional<double> brake_s)
+{
+  if (!goal_) {return;}
+  if (brake_s) {brake_s_ = brake_s_ ? std::min(*brake_s_, *brake_s) : *brake_s;}
+  replan_pending_ = true;
+  // Plan from where the reference will be when the plan arrives (it keeps moving meanwhile),
+  // but not beyond the point where it has to stop.
+  const double s_stop = brake_s_ ? *brake_s_ : traj_.length();
+  const double t_plan = solve_time_ + 0.2;
+  replan_from_s_ = std::clamp(s_ref_ + v_ref_ * t_plan, s_ref_, std::max(s_ref_, s_stop));
+  requestPlan(traj_.position(replan_from_s_), *goal_);
+}
+
+void InformedRRTPlanner::startTrajectory(std::vector<Eigen::Vector3d> waypoints)
+{
+  std::vector<Eigen::Vector3d> pts;
+  if (state_ == FlightState::FOLLOW_PATH && !traj_.empty()) {
+    // Splice: keep the reference where it is and continue along the old (free) path to the
+    // replan start, then the new path. If the reference already passed the replan start,
+    // join the new path at the point closest to the reference instead.
+    const Eigen::Vector3d ref = traj_.position(s_ref_);
+    if (s_ref_ <= replan_from_s_ + 1e-6) {
+      pts = traj_.slice(s_ref_, replan_from_s_);
+      pts.insert(pts.end(), waypoints.begin() + (waypoints.size() > 1 ? 1 : 0), waypoints.end());
+    } else {
+      const PathTrajectory fresh(waypoints, traj_limits_);
+      pts.push_back(ref);
+      const auto rest = fresh.slice(fresh.project(ref), fresh.length());
+      pts.insert(pts.end(), rest.begin(), rest.end());
+    }
+  } else {
+    // From hover: start at the hold point so the reference does not jump.
+    pts.push_back(hold_position_);
+    pts.insert(pts.end(), waypoints.begin(), waypoints.end());
+    v_ref_ = 0.0;
+    yaw_ref_ = hold_yaw_;
+  }
+  traj_ = PathTrajectory(std::move(pts), traj_limits_);
+  s_ref_ = 0.0;
+  replan_pending_ = false;
+  brake_s_.reset();
+  stop_and_hover_ = false;
+  if (traj_.empty()) {
+    RCLCPP_INFO(get_logger(), "GOAL REACHED");
+    goal_.reset();
+    enterHover(hold_position_);
+    return;
+  }
+  path_ = traj_.points();
+  wp_idx_ = 1;
+  state_ = FlightState::FOLLOW_PATH;
+  RCLCPP_INFO(
+    get_logger(), "Following path: %.1f m, %zu points, entry speed %.2f m/s", traj_.length(),
+    path_.size(), v_ref_);
+}
+
+// Moves the reference along the trajectory with bounded acceleration and sends PX4 position,
+// velocity feed-forward and a rate-limited yaw, so the vehicle flies through the waypoints
+// instead of stopping at each of them.
+void InformedRRTPlanner::followTrajectory(double dt)
+{
+  if (traj_.empty()) {
+    enterHover(position_);
+    return;
+  }
+  const double a = traj_limits_.max_accel;
+  // Speed limit here and where the reference will be once a jerk-limited deceleration has
+  // ramped in (a / max_jerk seconds), so braking starts early enough to be smooth.
+  const double s_ahead = s_ref_ + v_ref_ * a / traj_limits_.max_jerk;
+  double v_cap = std::min(traj_.speedLimit(s_ref_), traj_.speedLimit(s_ahead));
+  if (brake_s_) {
+    const double d = std::max(0.0, *brake_s_ - std::max(s_ref_, std::min(s_ahead, *brake_s_)));
+    v_cap = std::min(v_cap, std::sqrt(2.0 * a * d));
+  }
+  // Do not run away from a vehicle that cannot keep up.
+  const double lag = (traj_.position(s_ref_) - position_).norm();
+  if (lag > lag_soft_) {v_cap *= std::clamp((lag_max_ - lag) / (lag_max_ - lag_soft_), 0.0, 1.0);}
+
+  // Jerk-limited speed control: the acceleration needed to reach v_cap within one control
+  // period (at least 0.1 s) is clamped to [-2a, a] and may change by at most max_jerk * dt
+  // per tick. The braking profile uses a, so the jerk-limited ramp up to 2a has room to
+  // follow it; if it falls behind, the clamp below holds the speed at v_cap.
+  const double j = traj_limits_.max_jerk;
+  double a_des = dt > 0.0 ? (v_cap - v_ref_) / std::max(dt, 0.1) : 0.0;
+  a_des = std::clamp(a_des, -2.0 * a, a);
+  // Taper the acceleration so it reaches zero as the speed reaches v_cap (v + a^2 / 2j).
+  if (a_des > 0.0) {a_des = std::min(a_des, std::sqrt(2.0 * j * std::max(0.0, v_cap - v_ref_)));}
+  a_ref_ = std::clamp(a_des, a_ref_ - j * dt, a_ref_ + j * dt);
+  // Never exceed the speed limit, even if the jerk limit is still ramping the braking up.
+  const double v_prev = v_ref_;
+  v_ref_ = std::clamp(v_ref_ + a_ref_ * dt, 0.0, std::max(v_cap, 0.0));
+  if (dt > 0.0) {a_ref_ = (v_ref_ - v_prev) / dt;}
+  const double s_end = brake_s_ ? std::max(s_ref_, *brake_s_) : traj_.length();
+  // The braking profile tends to zero at the stop point: creep the last centimetres.
+  if (v_ref_ < 0.05 && s_ref_ < s_end - 1e-3 && lag < lag_soft_) {
+    v_ref_ = 0.05;
+    a_ref_ = 0.0;  // the creep is a constant speed: no acceleration feed-forward
+  }
+  s_ref_ = std::min(s_ref_ + v_ref_ * dt, s_end);
+  if (s_ref_ >= s_end - 1e-6) {
+    v_ref_ = std::min(v_ref_, v_cap);
+    a_ref_ = 0.0;
+  }
+
+  wp_idx_ = std::min(traj_.segmentIndex(s_ref_) + 1, path_.size() - 1);
+  const Eigen::Vector3d p = traj_.position(s_ref_);
+  const Eigen::Vector3d t = traj_.tangent(s_ref_);
+  if (t.head<2>().norm() > 0.3) {
+    const double dyaw = wrapPi(std::atan2(t.y(), t.x()) - yaw_ref_);
+    yaw_ref_ = wrapPi(yaw_ref_ + std::clamp(dyaw, -max_yaw_rate_ * dt, max_yaw_rate_ * dt));
+  }
+  const bool stopped_at_end = s_ref_ >= s_end - 1e-6;
+  publishSetpoint(
+    p, yaw_ref_, stopped_at_end ? Eigen::Vector3d::Zero() : Eigen::Vector3d(v_ref_ * t),
+    stopped_at_end ? Eigen::Vector3d::Zero() : Eigen::Vector3d(a_ref_ * t));
+  hold_position_ = p;
+  hold_yaw_ = yaw_ref_;
+
+  if (s_ref_ >= traj_.length() - 1e-6 && !replan_pending_ &&
+    (position_ - traj_.end()).norm() < acceptance_radius_)
+  {
+    RCLCPP_INFO(get_logger(), "GOAL REACHED");
+    path_.clear();
+    goal_.reset();
+    enterHover(traj_.end());
+  } else if (stop_and_hover_ && stopped_at_end) {
+    enterHover(p);
   }
 }
 
@@ -618,7 +778,10 @@ void InformedRRTPlanner::publishOffboardControlMode()
   offboard_pub_->publish(msg);
 }
 
-void InformedRRTPlanner::publishSetpoint(const Eigen::Vector3d & pos_world, double yaw_world)
+void InformedRRTPlanner::publishSetpoint(
+  const Eigen::Vector3d & pos_world, double yaw_world,
+  const std::optional<Eigen::Vector3d> & vel_world,
+  const std::optional<Eigen::Vector3d> & acc_world)
 {
   const Eigen::Vector3d ned = worldToNed(pos_world, world_frame_);
   const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -626,7 +789,17 @@ void InformedRRTPlanner::publishSetpoint(const Eigen::Vector3d & pos_world, doub
   msg.position = {static_cast<float>(ned.x()), static_cast<float>(ned.y()),
     static_cast<float>(ned.z())};
   msg.velocity = {nan, nan, nan};
+  if (vel_world) {
+    // worldToNed only swaps and negates axes, so it maps velocities as well.
+    const Eigen::Vector3d v = worldToNed(*vel_world, world_frame_);
+    msg.velocity = {static_cast<float>(v.x()), static_cast<float>(v.y()), static_cast<float>(v.z())};
+  }
   msg.acceleration = {nan, nan, nan};
+  if (acc_world) {
+    const Eigen::Vector3d acc = worldToNed(*acc_world, world_frame_);
+    msg.acceleration = {
+      static_cast<float>(acc.x()), static_cast<float>(acc.y()), static_cast<float>(acc.z())};
+  }
   msg.jerk = {nan, nan, nan};
   msg.yaw = static_cast<float>(worldYawToNed(yaw_world, world_frame_));
   msg.yawspeed = nan;
