@@ -42,10 +42,10 @@ path_planning:
 
     topics:
       vehicle_odometry: /fmu/out/vehicle_odometry
-      vehicle_status: /fmu/out/vehicle_status_v5   # versioned topic: check `ros2 topic list` (v1.15: /fmu/out/vehicle_status)
+      vehicle_status: /fmu/out/vehicle_status      # PX4 main + Zenoh: no _vN suffix; uXRCE-DDS may add one, check `ros2 topic list`
       offboard_control_mode: /fmu/in/offboard_control_mode
       trajectory_setpoint: /fmu/in/trajectory_setpoint
-      vehicle_command: /fmu/in/vehicle_command_v1    # versioned topic: check `ros2 topic list`
+      vehicle_command: /fmu/in/vehicle_command
       octomap: /octomap_binary
       goal: /goal_pose                             # RViz2 "2D Goal Pose"
       octomap_reset_service: /octomap_server/reset

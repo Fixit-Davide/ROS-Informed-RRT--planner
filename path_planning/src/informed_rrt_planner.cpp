@@ -104,13 +104,13 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   const auto t_odom = declare_parameter<std::string>(
     "topics.vehicle_odometry", "/fmu/out/vehicle_odometry");
   const auto t_status = declare_parameter<std::string>(
-    "topics.vehicle_status", "/fmu/out/vehicle_status_v5");
+    "topics.vehicle_status", "/fmu/out/vehicle_status");
   const auto t_offboard = declare_parameter<std::string>(
     "topics.offboard_control_mode", "/fmu/in/offboard_control_mode");
   const auto t_setpoint = declare_parameter<std::string>(
     "topics.trajectory_setpoint", "/fmu/in/trajectory_setpoint");
   const auto t_command = declare_parameter<std::string>(
-    "topics.vehicle_command", "/fmu/in/vehicle_command_v1");
+    "topics.vehicle_command", "/fmu/in/vehicle_command");
   const auto t_octomap = declare_parameter<std::string>("topics.octomap", "/octomap_binary");
   const auto t_goal = declare_parameter<std::string>("topics.goal", "/goal_pose");
   const auto s_reset = declare_parameter<std::string>(
