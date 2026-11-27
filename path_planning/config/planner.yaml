@@ -7,7 +7,7 @@ path_planning:
     frame_convention: nwu
 
     robot:
-      size: [0.55, 0.55, 0.50]        # collision box X-Y-Z [m]
+      size: [0.90, 0.90, 0.60]        # collision box X-Y-Z [m]: x500 is ~0.55 m wide, +~0.17 m margin per side
 
     bounds:                           # planning volume in map_frame [m]
       min: [-20.0, -20.0, 0.5]
