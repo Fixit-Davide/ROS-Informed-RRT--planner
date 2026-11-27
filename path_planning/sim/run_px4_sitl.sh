@@ -6,9 +6,12 @@
 # PX4_SIM_MODEL itself, so the PX4 binary is started directly (same command the make
 # target runs) with the x500 airframe (4001) and our model.
 #
-# Env overrides: PX4_DIR (default ~/PX4-Autopilot), PX4_GZ_WORLD (default walls),
+# Env overrides: PX4_DIR (default ~/PX4-Autopilot), PX4_GZ_WORLD (default walls; also any
+# world in ./worlds, e.g. obstacle_course),
 # HEADLESS=1 (no Gazebo GUI), plus any other PX4_* / PX4_GZ_* variable.
-# Needs ROS 2 sourced (vendored Gazebo libraries) and rmw_zenohd running.
+# Needs ROS 2 sourced (vendored Gazebo libraries) and rmw_zenohd running. Arguments go to
+# the px4 binary: pass -d (no pxh shell) when stdin is not a terminal, e.g. under nohup,
+# or the shell prints its prompt in a loop.
 set -euo pipefail
 
 PX4_DIR=${PX4_DIR:-$HOME/PX4-Autopilot}
@@ -28,6 +31,10 @@ fi
 # The model lives in the source tree; prefer it over an installed copy so edits apply.
 MODEL_SRC="$HERE/models/$MODEL"
 ln -sfn "$MODEL_SRC" "$PX4_DIR/Tools/simulation/gz/models/$MODEL"
+# Same for the worlds shipped here (PX4_GZ_WORLD=obstacle_course): PX4 looks them up by name.
+for world in "$HERE"/worlds/*.sdf; do
+  [ -e "$world" ] && ln -sfn "$world" "$PX4_DIR/Tools/simulation/gz/worlds/$(basename "$world")"
+done
 
 cd "$BUILD/src/modules/simulation/gz_bridge"
 exec env \
@@ -36,4 +43,4 @@ exec env \
   PX4_SIM_MODEL="gz_$MODEL" \
   PX4_GZ_WORLD="${PX4_GZ_WORLD:-walls}" \
   GZ_IP="${GZ_IP:-127.0.0.1}" \
-  "$BUILD/bin/px4"
+  "$BUILD/bin/px4" "$@"
