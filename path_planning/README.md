@@ -57,12 +57,33 @@ so the view is mirrored with respect to Gazebo's ENU world.
 1. Streams `OffboardControlMode` + `TrajectorySetpoint` at `control.rate_hz`.
 2. Once in OFFBOARD and armed (by the pilot, or by the node if `control.auto_arm`),
    resets the octomap and takes off to `control.takeoff_altitude` (skipped if already flying).
-3. On a goal: plans in a background thread (setpoint stream never stops), B-spline smooths,
-   re-interpolates to `planner.waypoint_spacing`, and flies the waypoints, yawing along the path.
-4. At `control.replan_check_rate_hz` the remaining path is checked against the newest
-   octomap; if it is blocked the drone holds position and replans.
-5. If the pilot leaves OFFBOARD or disarms, the path is dropped and the node does not
+3. On a goal: plans in a background thread (setpoint stream never stops), B-spline smooths
+   and re-interpolates to `planner.waypoint_spacing`. A failed plan is retried up to
+   `planner.max_attempts` times, each with twice the solve time.
+4. Flies the path without stopping at waypoints (see *Path following*).
+5. At `control.replan_check_rate_hz` the rest of the path is checked against the newest
+   octomap. If it is blocked, the drone keeps flying while it replans, braking only if the
+   blocked section is within reach; the new path is spliced onto the current reference.
+   Paths are planned with a box `robot.planning_margin` larger than the one they are
+   checked with, so new voxels right next to a fresh path do not trigger a replan.
+6. If the pilot leaves OFFBOARD or disarms, the path is dropped and the node does not
    re-request OFFBOARD until the vehicle has been disarmed.
+
+### Path following
+
+The path is parameterised by arc length with a speed limit profile: `control.max_speed`,
+corner speeds from `control.max_lateral_accel` and the turn angle at each waypoint, and a
+stop at the goal, all reachable by braking at `control.max_accel`. Each control tick a
+reference moves along it with acceleration limited to `max_accel` (braking up to 2x) and
+its rate of change to `control.max_jerk`. PX4 receives the reference position, velocity and
+acceleration as feed-forward, and a yaw that follows the path tangent at up to
+`control.max_yaw_rate`. If the drone falls more than `control.tracking_lag_soft` behind the
+reference, the reference slows down, and it waits at `control.tracking_lag_max`.
+
+Before this, every waypoint was a bare position setpoint 1 m ahead: PX4 accelerated towards
+it and braked when within `control.acceptance_radius`, so the drone surged and slowed at
+every waypoint (speed oscillating 0.6-0.8 m/s on an open 10 m leg). On the same leg it now
+accelerates once, cruises at 1.5 m/s and stops once at the goal (16.6 s -> 10.5 s).
 
 ## Interfaces
 
