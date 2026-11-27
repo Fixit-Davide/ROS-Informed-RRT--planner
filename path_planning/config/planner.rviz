@@ -44,6 +44,18 @@ Visualization Manager:
         History Policy: Keep Last
         Depth: 1
     - Class: rviz_default_plugins/Path
+      Name: Global route
+      Enabled: true
+      Topic:
+        Value: /path_planning/global_path
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 255; 170; 0
+      Line Style: Lines
+      Alpha: 0.8
+    - Class: rviz_default_plugins/Path
       Name: Planned path
       Enabled: true
       Topic:

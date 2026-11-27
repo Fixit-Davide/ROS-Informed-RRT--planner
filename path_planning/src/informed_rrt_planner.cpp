@@ -100,7 +100,7 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   bounds_min_ = toVec(declare_parameter<std::vector<double>>("bounds.min", {-20.0, -20.0, 0.5}));
   bounds_max_ = toVec(declare_parameter<std::vector<double>>("bounds.max", {20.0, 20.0, 4.0}));
 
-  solve_time_ = declare_parameter<double>("planner.solve_time", 1.0);
+  solve_time_ = declare_parameter<double>("planner.solve_time", 0.5);
   planner_range_ = declare_parameter<double>("planner.range", 4.0);
   k_nearest_ = declare_parameter<bool>("planner.k_nearest", false);
   objective_ = declare_parameter<std::string>("planner.objective", "path_length_cost_to_go");
@@ -125,6 +125,28 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   lag_max_ = declare_parameter<double>("control.tracking_lag_max", 2.0);
   stop_margin_ = declare_parameter<double>("control.stop_margin", 0.5);
   max_attempts_ = static_cast<int>(declare_parameter<int>("planner.max_attempts", 3));
+
+  global_enabled_ = declare_parameter<bool>("global.enabled", true);
+  global_options_.resolution = declare_parameter<double>("global.resolution", 0.4);
+  global_options_.snap_radius = declare_parameter<double>("global.snap_radius", 1.2);
+  global_options_.max_expansions =
+    static_cast<size_t>(declare_parameter<int>("global.max_expansions", 500000));
+  global_options_.shortcut_step = check_resolution_;
+  local_horizon_ = declare_parameter<double>("local.horizon", 10.0);
+  window_margin_ = declare_parameter<double>("local.window_margin", 2.0);
+  segment_replan_distance_ = declare_parameter<double>("local.replan_distance", 5.0);
+  direct_if_visible_ = declare_parameter<bool>("local.direct_if_visible", true);
+  if (local_horizon_ < segment_replan_distance_ + 1.0) {
+    RCLCPP_WARN(
+      get_logger(), "local.horizon (%.1f m) must exceed local.replan_distance (%.1f m) by 1 m: "
+      "raising it", local_horizon_, segment_replan_distance_);
+    local_horizon_ = segment_replan_distance_ + 1.0;
+  }
+  if (global_options_.resolution > std::min(robot_size_.minCoeff(), robot_plan_size_.minCoeff())) {
+    RCLCPP_WARN(
+      get_logger(), "global.resolution %.2f m is larger than the robot box: A* moves may cut "
+      "corners of obstacles", global_options_.resolution);
+  }
   auto_arm_ = declare_parameter<bool>("control.auto_arm", false);
   reset_map_on_takeoff_ = declare_parameter<bool>("control.reset_map_on_takeoff", true);
 
@@ -161,6 +183,8 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
     "~/path_markers", rclcpp::QoS(1).transient_local());
   path_pub_ = create_publisher<nav_msgs::msg::Path>(
     "~/planned_path", rclcpp::QoS(1).transient_local());
+  route_pub_ = create_publisher<nav_msgs::msg::Path>(
+    "~/global_path", rclcpp::QoS(1).transient_local());
   map_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
     "~/occupied_voxels", rclcpp::QoS(1).transient_local());
   reset_map_srv_ = create_service<std_srvs::srv::Empty>(
@@ -191,7 +215,8 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
     std::chrono::duration<double>(1.0 / replan_rate), [this]() {replanCheck();});
 
   RCLCPP_INFO(
-    get_logger(), "Informed-RRT* planner ready (objective: %s, frame: %s, auto_arm: %s)",
+    get_logger(), "Planner ready (%s, objective: %s, frame: %s, auto_arm: %s)",
+    global_enabled_ ? "global A* + local Informed-RRT*" : "Informed-RRT* to the goal",
     objective_.c_str(), world_frame_ == WorldFrame::ENU ? "ENU" : "NWU",
     auto_arm_ ? "true" : "false");
 }
@@ -382,7 +407,7 @@ void InformedRRTPlanner::controlLoop()
     plan_result_.reset();
   }
   if (result && result->success) {
-    startTrajectory(std::move(result->waypoints));
+    startTrajectory(std::move(result->waypoints), result->final);
   } else if (result && goal_) {
     const bool moving = state_ == FlightState::FOLLOW_PATH;
     if (current_attempt_ < max_attempts_) {
@@ -544,7 +569,7 @@ void InformedRRTPlanner::replanWhileMoving(std::optional<double> brake_s, int at
   requestPlan(traj_.position(replan_from_s_), *goal_, attempt);
 }
 
-void InformedRRTPlanner::startTrajectory(std::vector<Eigen::Vector3d> waypoints)
+void InformedRRTPlanner::startTrajectory(std::vector<Eigen::Vector3d> waypoints, bool final)
 {
   std::vector<Eigen::Vector3d> pts;
   if (state_ == FlightState::FOLLOW_PATH && !traj_.empty()) {
@@ -573,18 +598,25 @@ void InformedRRTPlanner::startTrajectory(std::vector<Eigen::Vector3d> waypoints)
   replan_pending_ = false;
   brake_s_.reset();
   stop_and_hover_ = false;
+  segment_final_ = final;
   if (traj_.empty()) {
-    RCLCPP_INFO(get_logger(), "GOAL REACHED");
-    goal_.reset();
-    enterHover(hold_position_);
+    if (final || !goal_) {
+      RCLCPP_INFO(get_logger(), "GOAL REACHED");
+      goal_.reset();
+      enterHover(hold_position_);
+    } else {
+      // Degenerate intermediate segment: plan again from where we are.
+      state_ = FlightState::PLANNING;
+      requestPlan(hold_position_, *goal_);
+    }
     return;
   }
   path_ = traj_.points();
   wp_idx_ = 1;
   state_ = FlightState::FOLLOW_PATH;
   RCLCPP_INFO(
-    get_logger(), "Following path: %.1f m, %zu points, entry speed %.2f m/s", traj_.length(),
-    path_.size(), v_ref_);
+    get_logger(), "Following path: %.1f m, %zu points, entry speed %.2f m/s%s", traj_.length(),
+    path_.size(), v_ref_, final ? "" : " (more segments follow)");
 }
 
 // Moves the reference along the trajectory with bounded acceleration and sends PX4 position,
@@ -649,7 +681,18 @@ void InformedRRTPlanner::followTrajectory(double dt)
   hold_position_ = p;
   hold_yaw_ = yaw_ref_;
 
-  if (s_ref_ >= traj_.length() - 1e-6 && !replan_pending_ &&
+  // Receding horizon: plan the next local segment while this one still has room ahead. It
+  // starts at this segment's end (the previous local goal, on the global route), so the
+  // current segment is flown entirely and the two meet roughly in line.
+  if (!segment_final_ && goal_ && !replan_pending_ && !stop_and_hover_ &&
+    traj_.length() - s_ref_ < segment_replan_distance_)
+  {
+    replan_pending_ = true;
+    replan_from_s_ = traj_.length();
+    requestPlan(traj_.end(), *goal_);
+  }
+
+  if (segment_final_ && s_ref_ >= traj_.length() - 1e-6 && !replan_pending_ &&
     (position_ - traj_.end()).norm() < acceptance_radius_)
   {
     RCLCPP_INFO(get_logger(), "GOAL REACHED");
@@ -701,30 +744,92 @@ void InformedRRTPlanner::plannerWorker()
     }
     PlanResult res;
     try {
-      res = solve(req, planWorld());
+      res = plan(req, planWorld());
     } catch (const std::exception & e) {
       RCLCPP_ERROR(get_logger(), "Planner exception: %s", e.what());
-      res = PlanResult{false, {}, req.seq};
+      res = PlanResult{false, {}, req.seq, true, {}};
     }
+    if (!res.route.empty()) {publishRoute(res.route);}
     if (res.success) {publishPath(res.waypoints);}
     std::lock_guard<std::mutex> lk(plan_mutex_);
     if (res.seq == plan_seq_) {plan_result_ = std::move(res);}
   }
 }
 
-InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
+InformedRRTPlanner::PlanResult InformedRRTPlanner::plan(
   const PlanRequest & req, std::shared_ptr<const CollisionWorld> w)
 {
-  PlanResult out{false, {}, req.seq};
   if (!w->hasMap()) {
     RCLCPP_WARN(get_logger(), "Map is empty (no lidar scan yet): planning in free space");
   }
+  if (!global_enabled_) {return solveLocal(req, w, req.goal, bounds_min_, bounds_max_);}
 
+  // ---- global: A* route over the whole planning volume ----
+  const auto t0 = std::chrono::steady_clock::now();
+  const GlobalPlanner global(global_options_);
+  const Eigen::Vector3d start = req.start.cwiseMax(bounds_min_).cwiseMin(bounds_max_);
+  const GlobalPlan route = global.plan(*w, bounds_min_, bounds_max_, start, req.goal);
+  const double route_ms =
+    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  if (!route.success) {
+    RCLCPP_WARN(
+      get_logger(), "No global route to the goal (%zu nodes expanded, %.0f ms)", route.expansions,
+      route_ms);
+    return PlanResult{false, {}, req.seq, true, {}};
+  }
+
+  // ---- local: Informed-RRT* to the route point local.horizon ahead, in a window around
+  // that part of the route ----
+  const bool final = route.length <= local_horizon_ + 1e-6;
+  const Eigen::Vector3d local_goal = final ? route.path.back() : pointAlong(route.path, local_horizon_);
+  Eigen::Vector3d lo = local_goal, hi = local_goal;
+  double s = 0.0;
+  for (size_t i = 0; i < route.path.size() && s <= local_horizon_; ++i) {
+    if (i > 0) {s += (route.path[i] - route.path[i - 1]).norm();}
+    if (s <= local_horizon_ || i == 0) {
+      lo = lo.cwiseMin(route.path[i]);
+      hi = hi.cwiseMax(route.path[i]);
+    }
+  }
+  lo = (lo - Eigen::Vector3d::Constant(window_margin_)).cwiseMax(bounds_min_);
+  hi = (hi + Eigen::Vector3d::Constant(window_margin_)).cwiseMin(bounds_max_);
+  lo.z() = bounds_min_.z();  // the full altitude band: the local plan may climb over things
+  hi.z() = bounds_max_.z();
+  RCLCPP_INFO(
+    get_logger(), "Global route: %zu points, %.1f m, %zu nodes expanded, %.0f ms; local goal "
+    "%.1f m ahead%s", route.path.size(), route.length, route.expansions, route_ms,
+    final ? route.length : local_horizon_, final ? " (the goal)" : "");
+
+  PlanResult out;
+  if (direct_if_visible_ && w->isFree(start) &&
+    w->isSegmentFree(start, local_goal, check_resolution_))
+  {
+    // Nothing between here and the local goal: the straight line is what Informed-RRT* would
+    // converge to, so skip the solve.
+    const double len = (local_goal - start).norm();
+    const int n = waypoint_spacing_ > 0.0 ?
+      std::max(1, static_cast<int>(std::ceil(len / waypoint_spacing_))) : 1;
+    out = PlanResult{true, {}, req.seq, true, {}};
+    for (int i = 0; i <= n; ++i) {out.waypoints.push_back(start + (local_goal - start) * (double(i) / n));}
+    RCLCPP_INFO(get_logger(), "Local path: straight line to the local goal (%.2f m)", len);
+  } else {
+    out = solveLocal(req, w, local_goal, lo, hi);
+  }
+  out.final = final;
+  out.route = route.path;
+  return out;
+}
+
+InformedRRTPlanner::PlanResult InformedRRTPlanner::solveLocal(
+  const PlanRequest & req, std::shared_ptr<const CollisionWorld> w,
+  const Eigen::Vector3d & goal_pos, const Eigen::Vector3d & lo, const Eigen::Vector3d & hi)
+{
+  PlanResult out{false, {}, req.seq, true, {}};
   auto space = std::make_shared<ob::RealVectorStateSpace>(3);
   ob::RealVectorBounds bounds(3);
   for (int i = 0; i < 3; ++i) {
-    bounds.setLow(i, bounds_min_[i]);
-    bounds.setHigh(i, bounds_max_[i]);
+    bounds.setLow(i, lo[i]);
+    bounds.setHigh(i, hi[i]);
   }
   space->setBounds(bounds);
 
@@ -742,8 +847,8 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
 
   ob::ScopedState<ob::RealVectorStateSpace> start(space), goal(space);
   for (int i = 0; i < 3; ++i) {
-    start[i] = std::clamp(req.start[i], bounds_min_[i], bounds_max_[i]);
-    goal[i] = req.goal[i];
+    start[i] = std::clamp(req.start[i], lo[i], hi[i]);
+    goal[i] = std::clamp(goal_pos[i], lo[i], hi[i]);
   }
 
   auto pdef = std::make_shared<ob::ProblemDefinition>(si);
@@ -828,10 +933,27 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
   }
   out.success = true;
   RCLCPP_INFO(
-    get_logger(), "Found path: %zu waypoints, %.2f m, %.0f ms", out.waypoints.size(),
+    get_logger(), "Found local path: %zu waypoints, %.2f m, %.0f ms", out.waypoints.size(),
     path.length(),
     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
   return out;
+}
+
+void InformedRRTPlanner::publishRoute(const std::vector<Eigen::Vector3d> & route)
+{
+  nav_msgs::msg::Path path;
+  path.header.frame_id = map_frame_;
+  path.header.stamp = now();
+  for (const auto & p : route) {
+    geometry_msgs::msg::PoseStamped ps;
+    ps.header = path.header;
+    ps.pose.position.x = p.x();
+    ps.pose.position.y = p.y();
+    ps.pose.position.z = p.z();
+    ps.pose.orientation.w = 1.0;
+    path.poses.push_back(ps);
+  }
+  route_pub_->publish(path);
 }
 
 void InformedRRTPlanner::publishPath(const std::vector<Eigen::Vector3d> & wps)
