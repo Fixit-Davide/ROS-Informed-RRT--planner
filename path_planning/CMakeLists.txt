@@ -20,15 +20,28 @@ find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-find_package(octomap_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(message_filters REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(octomap REQUIRED)
-find_package(fcl REQUIRED)
+find_package(bonxai_ros REQUIRED)   # Bonxai: bonxai_core + bonxai_map (ProbabilisticMap)
 find_package(ompl REQUIRED)
 
-add_library(${PROJECT_NAME} SHARED
+# Map and collision checks, without ROS: also linked by the unit tests.
+add_library(${PROJECT_NAME}_map STATIC
+  src/occupancy_map.cpp
   src/collision_world.cpp
+)
+set_target_properties(${PROJECT_NAME}_map PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(${PROJECT_NAME}_map PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(${PROJECT_NAME}_map PUBLIC
+  bonxai_ros::bonxai_map
+  Eigen3::Eigen
+)
+
+add_library(${PROJECT_NAME} SHARED
   src/informed_rrt_planner.cpp
   src/path_trajectory.cpp
 )
@@ -38,29 +51,24 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
   ${OMPL_INCLUDE_DIRS}
-  ${OCTOMAP_INCLUDE_DIRS}
 )
 target_link_libraries(${PROJECT_NAME}
+  ${PROJECT_NAME}_map
   rclcpp::rclcpp
   rclcpp_components::component
   ${geometry_msgs_TARGETS}
   ${nav_msgs_TARGETS}
   ${visualization_msgs_TARGETS}
   ${std_srvs_TARGETS}
-  ${octomap_msgs_TARGETS}
+  ${sensor_msgs_TARGETS}
+  message_filters::message_filters
   ${px4_msgs_TARGETS}
   tf2::tf2
   tf2_ros::tf2_ros
   tf2_geometry_msgs::tf2_geometry_msgs
   Eigen3::Eigen
-  fcl
   ${OMPL_LIBRARIES}
-  ${OCTOMAP_LIBRARIES}
 )
-# octomap_msgs' conversions.h is header-only and needs the octomap includes.
-if(TARGET octomap_msgs::octomap_msgs)
-  target_link_libraries(${PROJECT_NAME} octomap_msgs::octomap_msgs)
-endif()
 
 rclcpp_components_register_node(${PROJECT_NAME}
   PLUGIN "path_planning::InformedRRTPlanner"
@@ -82,6 +90,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_path_trajectory test/test_path_trajectory.cpp src/path_trajectory.cpp)
   target_include_directories(test_path_trajectory PRIVATE include)
   target_link_libraries(test_path_trajectory Eigen3::Eigen)
+
+  ament_add_gtest(test_occupancy_map test/test_occupancy_map.cpp)
+  target_link_libraries(test_occupancy_map ${PROJECT_NAME}_map)
 endif()
 
 ament_package()

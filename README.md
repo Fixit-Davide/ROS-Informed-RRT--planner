@@ -30,43 +30,65 @@ flowchart LR
         ST["/fmu/out/vehicle_status"]
         IN["/fmu/in/offboard_control_mode<br/>/fmu/in/trajectory_setpoint<br/>/fmu/in/vehicle_command"]
     end
-    LIDAR["3D lidar<br/>/lidar/points"] --> OCT
+    LIDAR["3D lidar<br/>/lidar/points"] --> PL
     ODO --> DP["drone_pose<br/>map → base_link tf"]
-    DP -- tf --> OCT["octomap_server<br/>3D occupancy map"]
-    OCT -- /octomap_binary --> PL
-    ODO --> PL["path_planning<br/>InformedRRTPlanner"]
+    DP -- tf --> PL
+    ODO --> PL["path_planning<br/>InformedRRTPlanner<br/>(Bonxai map inside)"]
     ST --> PL
     GOAL["/goal_pose<br/>(RViz2 2D Goal Pose)"] --> PL
     PL --> IN
-    PL -- planned path, markers --> RV["RViz2"]
+    PL -- planned path, map voxels --> RV["RViz2"]
 ```
 
-Three nodes make up the pipeline.
+Two nodes make up the pipeline.
 
 **[`drone_pose`](https://github.com/Fixit-Davide/PX4-ROS2-Drone-Composable)** (separate repo)
 turns PX4's `VehicleOdometry` (NED position, FRD attitude) into the `map → base_link` tf, a
 `/vehicle_pose` and a bounded `/vehicle_path` track. A static `base_link → lidar_link` tf
 places the sensor.
 
-**`octomap_server`** inserts every lidar scan into an
-[OctoMap](https://octomap.github.io/) at 0.2 m resolution:
-
-- Rays mark free space along their length and occupied space where they hit.
-- Points below 0.3 m are dropped, so the ground is not mapped as an obstacle.
-- The map is published as `/octomap_binary` at the scan rate.
-
 **`path_planning`** is a composable node, `path_planning::InformedRRTPlanner`, that does
-everything else. The stages are described below.
+everything else, mapping included. The stages are described below.
 
-### 1. Collision checking (FCL)
+### 1. Mapping (Bonxai)
 
-Each new octomap is wrapped in an [FCL](https://github.com/flexible-collision-library/fcl)
-`OcTree`. The drone is modeled as a box, `robot.size`, by default 0.9 × 0.9 × 0.6 m: the x500
-airframe plus a safety margin. A position is free when that box does not touch an occupied
-voxel. A segment is free when every sample along it, every
-`planner.collision_check_resolution` (0.1 m), is free.
+The node subscribes to the lidar cloud (`topics.cloud`) and inserts every scan into a
+probabilistic occupancy map built with [Bonxai](https://github.com/facontidavide/Bonxai), at
+`mapping.resolution` (0.2 m):
 
-Two collision worlds share the same octree:
+- **Ray casting:** each ray lowers the occupancy of the voxels it crosses and raises it where
+  it hits, with the same sensor model as octomap_server (hit 0.7, miss 0.4, clamping
+  0.12–0.97). Rays longer than `mapping.max_range` (15 m) only clear free space.
+- **Ground filter:** points outside `mapping.min_z`–`max_z` (0.3–6 m) in the map frame are
+  dropped, so the ground is not mapped as an obstacle.
+- **Timing:** a scan is held back by a tf message filter until `map → lidar frame` is known
+  at its stamp. In SITL, inserting a 16-channel scan takes about 3–4 ms, and the map of the
+  walls world takes about 0.3 MB.
+- **Visualization:** the occupied voxels are published as height-coloured cubes on
+  `~/occupied_voxels` at `mapping.publish_rate_hz` (2 Hz).
+
+The map lives inside the planner, so nothing is serialized or sent between processes. The
+node used to get an OctoMap from `octomap_server` instead. [docs/bonxai_eval](docs/bonxai_eval/)
+compares the two on recorded SITL scans. Bonxai inserts scans 8.8× faster at 0.2 m, and
+16.6× faster at 0.1 m, a resolution at which octomap_server can no longer keep up with a
+10 Hz lidar.
+
+### 2. Collision checking
+
+After each scan, the occupied voxels are copied into an immutable snapshot that the planning
+thread can use while the map keeps changing. The drone is modeled as a box, `robot.size`, by
+default 0.9 × 0.9 × 0.6 m: the x500 airframe plus a safety margin.
+
+- **States:** a position is free when that box overlaps no occupied voxel. The check looks up
+  the voxels under the box, about 2 µs at 0.2 m. On the recorded tour it agrees with FCL's
+  box-versus-octree test on 99.97 % of states.
+- **Segments:** a segment is free when every sample along it, every
+  `planner.collision_check_resolution` (0.1 m), is free.
+- **Clearance:** the distance from the box to the nearest occupied voxel, used by the
+  `balanced` objective. It searches 8³-voxel blocks with a bounding-box lower bound, about
+  8 µs per query.
+
+Two collision worlds share the same snapshot:
 
 - **Planning world:** the box grown by `robot.planning_margin` (0.15 m per side).
 - **Checking world:** the plain box, used to recheck paths that are already planned.
@@ -75,7 +97,7 @@ A new voxel therefore has to intrude more than the margin into a path's clearanc
 path counts as blocked. Without this hysteresis, every scan near a wall would trigger a
 replan, because RRT* paths hug the boundary they are planned with.
 
-### 2. Path planning (OMPL Informed-RRT*)
+### 3. Path planning (OMPL Informed-RRT*)
 
 Planning runs on a background thread, so the setpoint stream to PX4 never stops. It searches
 the 3D position space (R³) inside the box `bounds.min`–`bounds.max`, by default
@@ -97,7 +119,7 @@ path.
 - **Retries:** a failed plan is retried up to `planner.max_attempts` (3) times, each with
   twice the previous solve time (1, 2, then 4 s).
 
-### 3. Path following
+### 4. Path following
 
 A waypoint list fed to PX4 as bare position setpoints makes the drone surge toward each
 waypoint and brake at it. Instead, the path is flown as a trajectory.
@@ -122,7 +144,7 @@ In SITL this turned a stop-and-go 10 m leg (speed oscillating between 0.6 and 0.
 16.6 s) into one acceleration, a 1.5 m/s cruise and one stop (10.5 s), with under 0.2 m of
 tracking error.
 
-### 4. Replanning in flight
+### 5. Replanning in flight
 
 At `control.replan_check_rate_hz` (2 Hz) the rest of the path is rechecked against the newest
 map. When newly mapped obstacles block it:
@@ -136,7 +158,7 @@ map. When newly mapped obstacles block it:
 
 A new goal sent mid-flight is handled the same way.
 
-### 5. Flight state machine
+### 6. Flight state machine
 
 ```mermaid
 stateDiagram-v2
@@ -171,21 +193,22 @@ pilot.
 path_planning/
 ├── include/path_planning/
 │   ├── informed_rrt_planner.hpp   node: state machine, planning thread, PX4 interface
-│   ├── collision_world.hpp        FCL octree + robot box collision queries
+│   ├── occupancy_map.hpp          Bonxai lidar map + immutable occupied-voxel snapshots
+│   ├── collision_world.hpp        robot box collision and clearance queries on a snapshot
 │   ├── path_trajectory.hpp        arc-length path, speed profile, projection
 │   └── px4_frames.hpp             NED/FRD <-> map frame (NWU or ENU) conversions
 ├── src/                           implementations of the above
-├── test/test_path_trajectory.cpp  gtest for PathTrajectory
+├── test/                          gtests: PathTrajectory, OccupancyMap, CollisionWorld
 ├── config/
-│   ├── planner.yaml               all planner parameters (commented)
-│   ├── mapping.yaml               octomap_server parameters
+│   ├── planner.yaml               all planner and mapping parameters (commented)
 │   └── planner.rviz               RViz2 view: map, cloud, path, drone
 ├── launch/
 │   ├── planner.launch.py          planner (+ mapping, Gazebo bridge, RViz2 options)
-│   └── mapping.launch.py          drone_pose, lidar tf, octomap_server, ros_gz_bridge
-└── sim/
+│   └── mapping.launch.py          drone_pose, lidar tf, ros_gz_bridge
+├── sim/
     ├── models/x500_lidar_3d/      Gazebo model: PX4 x500 + 16-channel 3D lidar
-    └── run_px4_sitl.sh            starts PX4 SITL with that model in the walls world
+│   └── run_px4_sitl.sh            starts PX4 SITL with that model in the walls world
+docs/bonxai_eval/                  Bonxai vs octomap benchmark, scripts and results
 ```
 
 ## Requirements
@@ -196,8 +219,8 @@ path_planning/
 | PX4 | main (built against the same Gazebo) |
 | Gazebo | Jetty (gz-sim 10), the `gz_*_vendor` packages of ROS 2 |
 | Middleware | `rmw_zenoh_cpp` + PX4's Zenoh client (or uXRCE-DDS) |
-| Libraries | OMPL 1.6, FCL 0.7 (`libfcl-dev`), OctoMap 1.9 (`liboctomap-dev`), Eigen 3 |
-| ROS packages | [`px4_msgs`](https://github.com/PX4/px4_msgs), `octomap_msgs`, `octomap_server` + `octomap_ros`, [`drone_pose`](https://github.com/Fixit-Davide/PX4-ROS2-Drone-Composable), `ros_gz_bridge`, `rviz2` |
+| Libraries | OMPL 1.6, Eigen 3, PCL (for Bonxai's ROS package) |
+| ROS packages | [`px4_msgs`](https://github.com/PX4/px4_msgs), [`bonxai_ros`](https://github.com/facontidavide/Bonxai) (clone into the workspace), [`drone_pose`](https://github.com/Fixit-Davide/PX4-ROS2-Drone-Composable), `ros_gz_bridge`, `rviz2` |
 
 `px4_msgs` must match the PX4 commit you fly. Zenoh topic names carry the message type hash,
 so a different message definition silently fails to connect.
@@ -206,7 +229,8 @@ so a different message definition silently fails to connect.
 
 ```bash
 source ~/ros2_lyrical/install/setup.bash
-cd ~/ros2_ws && colcon build --packages-up-to path_planning octomap_server drone_pose
+cd ~/ros2_ws/src && git clone https://github.com/facontidavide/Bonxai.git   # package bonxai_ros
+cd ~/ros2_ws && colcon build --packages-up-to path_planning drone_pose
 ```
 
 Unit tests:
@@ -254,8 +278,8 @@ ros2 run rmw_zenoh_cpp rmw_zenohd
 ros2 launch path_planning planner.launch.py
 ```
 
-The pilot switches to OFFBOARD and arms. Point `cloud_topic`, `lidar_frame` and `lidar_z` of
-`mapping.launch.py` at the real sensor.
+The pilot switches to OFFBOARD and arms. Point the planner's `topics.cloud` at the real
+sensor's cloud, and `lidar_frame` and `lidar_z` of `mapping.launch.py` at its mounting.
 
 ### Sending goals
 
@@ -275,14 +299,15 @@ Goals outside `bounds` are clamped into them.
 |-|-|-|
 | `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | in |
 | `/fmu/out/vehicle_status` | `px4_msgs/VehicleStatus` | in |
-| `/octomap_binary` | `octomap_msgs/Octomap` | in |
+| `/lidar/points` | `sensor_msgs/PointCloud2` | in, mapped in the node |
 | `/goal_pose` | `geometry_msgs/PoseStamped` | in |
 | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | out |
 | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | out |
 | `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | out |
 | `~/planned_path` | `nav_msgs/Path` | out (transient local) |
 | `~/path_markers` | `visualization_msgs/MarkerArray` | out (transient local) |
-| `/octomap_server/reset` | `std_srvs/Empty` | client, called on takeoff |
+| `~/occupied_voxels` | `visualization_msgs/MarkerArray` | out (transient local), map cubes |
+| `~/reset_map` | `std_srvs/Empty` | service: clear the map (also done on takeoff) |
 
 All topic names are parameters (`topics.*`). The uXRCE-DDS bridge may add a `_vN` suffix to
 versioned PX4 messages. Check `ros2 topic list` and adjust them if so.
@@ -308,6 +333,10 @@ up. With `nwu`, RViz shows the scene mirrored compared with Gazebo's ENU world.
   1.8–1.9 m/s at 1.5 m/s, when reaching cruise speed or leaving a corner. The tightest SITL
   pass left about 0.17 m between airframe and wall. Lower `control.max_speed` or
   `max_lateral_accel` for more clearance.
+- **NaN samples on open legs:** when the straight line to the goal is free, Informed-RRT*
+  finds an almost optimal path at once, its informed ellipsoid collapses, and OMPL samples
+  NaN states for the rest of the solve time. They are rejected before the collision check
+  and counted in a warning; the path found is unaffected.
 - **Unknown space is free:** only mapped obstacles are avoided. Fly slower than the lidar can
   map ahead.
 
@@ -318,7 +347,7 @@ goals and objective typed on stdin). The `ros2` branch is the ROS 2 Lyrical + PX
 Compared with the ROS 1 version:
 
 - **ROS 2 and PX4:** a composable node, PX4 OFFBOARD control and parameters instead of prompts.
-- **Libraries:** FCL 0.5 became 0.7.
+- **Libraries:** FCL + OctoMap were replaced by a Bonxai map inside the node.
 - **Search space:** SE(3) became R³, since random orientations were wasted samples.
 - **Pipeline:** lidar mapping, the trajectory follower, replanning in flight, plan retries and
   the planning margin are new.
