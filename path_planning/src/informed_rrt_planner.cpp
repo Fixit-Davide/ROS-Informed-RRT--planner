@@ -136,6 +136,7 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   window_margin_ = declare_parameter<double>("local.window_margin", 2.0);
   segment_replan_distance_ = declare_parameter<double>("local.replan_distance", 5.0);
   direct_if_visible_ = declare_parameter<bool>("local.direct_if_visible", true);
+  local_fallback_to_route_ = declare_parameter<bool>("local.fallback_to_route", true);
   if (local_horizon_ < segment_replan_distance_ + 1.0) {
     RCLCPP_WARN(
       get_logger(), "local.horizon (%.1f m) must exceed local.replan_distance (%.1f m) by 1 m: "
@@ -815,6 +816,33 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::plan(
   } else {
     out = solveLocal(req, w, local_goal, lo, hi);
   }
+  if (!out.success && local_fallback_to_route_) {
+    // The route itself is collision free for the planning box (A* moves and shortcuts are
+    // checked), so fly it up to the local goal rather than giving up.
+    std::vector<Eigen::Vector3d> part{route.path.front()};
+    double s_acc = 0.0;
+    for (size_t i = 1; i < route.path.size(); ++i) {
+      const double seg = (route.path[i] - route.path[i - 1]).norm();
+      if (s_acc + seg >= local_horizon_ || i + 1 == route.path.size()) {
+        part.push_back(final ? route.path.back() : local_goal);
+        break;
+      }
+      s_acc += seg;
+      part.push_back(route.path[i]);
+    }
+    out = PlanResult{true, {}, req.seq, true, {}};
+    for (size_t i = 1; i < part.size(); ++i) {
+      const double len = (part[i] - part[i - 1]).norm();
+      const int n = waypoint_spacing_ > 0.0 ?
+        std::max(1, static_cast<int>(std::ceil(len / waypoint_spacing_))) : 1;
+      for (int k = (i == 1 ? 0 : 1); k <= n; ++k) {
+        out.waypoints.push_back(part[i - 1] + (part[i] - part[i - 1]) * (double(k) / n));
+      }
+    }
+    RCLCPP_WARN(
+      get_logger(), "Local Informed-RRT* found no path: following the A* route (%.1f m)",
+      polylineLength(part));
+  }
   out.final = final;
   out.route = route.path;
   return out;
@@ -911,7 +939,10 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solveLocal(
     RCLCPP_WARN(get_logger(), "OMPL produced %zu non-finite states (rejected)", non_finite->load());
   }
   if (status != ob::PlannerStatus::EXACT_SOLUTION) {
-    RCLCPP_WARN(get_logger(), "Planner status: %s", status.asString().c_str());
+    RCLCPP_WARN(
+      get_logger(), "Planner status: %s (start %s, goal %s, window [%.1f %.1f %.1f]-[%.1f %.1f %.1f])",
+      status.asString().c_str(), w->isFree(req.start) ? "free" : "in collision",
+      w->isFree(goal_pos) ? "free" : "in collision", lo.x(), lo.y(), lo.z(), hi.x(), hi.y(), hi.z());
     return out;
   }
 

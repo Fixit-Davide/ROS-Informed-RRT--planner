@@ -127,7 +127,7 @@ private:
   bool global_enabled_;
   GlobalPlannerOptions global_options_;
   double local_horizon_, window_margin_, segment_replan_distance_;
-  bool direct_if_visible_;
+  bool direct_if_visible_, local_fallback_to_route_;
   bool auto_arm_, reset_map_on_takeoff_;
   int target_system_, target_component_;
   Eigen::Vector3d robot_size_;       // collision box [m]
