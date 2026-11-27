@@ -2,29 +2,55 @@
 
 Informed-RRT* collision-avoidance planner for multirotors:
 **Octomap** (map) → **FCL** (collision checks of a box-shaped drone) → **OMPL** (Informed-RRT*),
-commanding **PX4** in OFFBOARD mode through the uXRCE-DDS bridge (`px4_msgs`).
+commanding **PX4** in OFFBOARD mode over `px4_msgs` (PX4's native Zenoh client with
+`rmw_zenoh_cpp`, or the uXRCE-DDS bridge). The map is built from a 3D lidar point cloud.
 Replaces the ROS 1 / MAVROS / ArduPilot version.
 
 ## Build
 
 ```bash
 source ~/ros2_lyrical/install/setup.bash
-cd ~/ros2_ws && colcon build --packages-up-to path_planning octomap_server
+cd ~/ros2_ws && colcon build --packages-up-to path_planning octomap_server drone_pose
 ```
 
-Dependencies: `px4_msgs` (must match your PX4 firmware branch), `octomap_msgs`,
-`octomap_server` (mapping launch only), OMPL, `libfcl-dev` (with Octomap support), `liboctomap-dev`.
+Dependencies: `px4_msgs` (must match your PX4 firmware commit, or the topic type hashes
+differ and nothing connects), `octomap_msgs`, OMPL, `libfcl-dev` (with Octomap support),
+`liboctomap-dev`. Mapping launch: `octomap_server` (+ `octomap_ros`), `drone_pose`
+(`map -> base_link` tf), `ros_gz_bridge` (SITL only). Visualisation: `rviz2`.
 
 ## Run
 
+Every terminal: `source ~/ros2_ws/install/setup.bash` and `export RMW_IMPLEMENTATION=rmw_zenoh_cpp`.
+
 ```bash
-MicroXRCEAgent udp4 -p 8888              # PX4 <-> ROS 2 bridge
-ros2 launch path_planning planner.launch.py             # real drone: pilot switches OFFBOARD + arms
-ros2 launch path_planning planner.launch.py auto_arm:=true use_sim_time:=true   # SITL
+ros2 run rmw_zenoh_cpp rmw_zenohd                      # Zenoh router (PX4 and ROS 2 connect to it)
+ros2 launch path_planning planner.launch.py            # real drone: pilot switches OFFBOARD + arms
 ```
 
 Send a goal with RViz2 **2D Goal Pose** (`/goal_pose`). The goal z of RViz is 0, so
 `control.default_goal_altitude` is used instead (the ROS 1 version asked for it on stdin).
+
+### Simulation (PX4 SITL + Gazebo)
+
+`sim/models/x500_lidar_3d` is PX4's x500 with a 16-channel 3D `gpu_lidar` (gz topic
+`/lidar/points`, frame `lidar_link`). `sim/run_px4_sitl.sh` symlinks it into PX4 and starts
+SITL in the `walls` world with PX4's Zenoh middleware:
+
+```bash
+ros2 run rmw_zenoh_cpp rmw_zenohd
+path_planning/sim/run_px4_sitl.sh                      # HEADLESS=1 for no Gazebo GUI, PX4_GZ_WORLD=... to change world
+ros2 launch path_planning planner.launch.py use_sim_time:=true auto_arm:=true gz_bridge:=true rviz:=true
+```
+
+`gz_bridge:=true` bridges the lidar cloud and `/clock` (the cloud is stamped with sim time,
+so `use_sim_time:=true` is required). PX4 refuses to arm without a GCS link while
+`NAV_DLL_ACT > 0`: run QGroundControl, or set `NAV_DLL_ACT 0` on the ground for headless tests.
+
+### Visualisation
+
+`rviz:=true` opens `config/planner.rviz`: tf, lidar cloud, octomap occupied voxels,
+planned path and waypoints, flown track (`/vehicle_path`) and pose. The map frame is NWU,
+so the view is mirrored with respect to Gazebo's ENU world.
 
 ## Behaviour
 
@@ -43,17 +69,18 @@ Send a goal with RViz2 **2D Goal Pose** (`/goal_pose`). The goal z of RViz is 0,
 | Topic | Type | Dir |
 |-|-|-|
 | `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | in |
-| `/fmu/out/vehicle_status_v5` | `px4_msgs/VehicleStatus` | in |
+| `/fmu/out/vehicle_status` | `px4_msgs/VehicleStatus` | in |
 | `/octomap_binary` | `octomap_msgs/Octomap` | in |
 | `/goal_pose` | `geometry_msgs/PoseStamped` | in |
 | `/fmu/in/offboard_control_mode` | `px4_msgs/OffboardControlMode` | out |
 | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | out |
-| `/fmu/in/vehicle_command_v1` | `px4_msgs/VehicleCommand` | out |
+| `/fmu/in/vehicle_command` | `px4_msgs/VehicleCommand` | out |
 | `~/planned_path` | `nav_msgs/Path` | out |
 | `~/path_markers` | `visualization_msgs/MarkerArray` | out |
 
-PX4 versioned messages get a `_vN` topic suffix; check `ros2 topic list` and set
-`topics.*` in `config/planner.yaml` to match your firmware.
+PX4 main over Zenoh publishes these names without suffix. The uXRCE-DDS bridge may add a
+`_vN` suffix to versioned messages: check `ros2 topic list` and set `topics.*` in
+`config/planner.yaml` to match.
 
 ## Frames
 
@@ -72,3 +99,10 @@ NED is mapped: `nwu` (x, -y, -z, default — same as the `drone_pose` package th
   `switch` comparing ints to chars (infinite loop), `dist_err[3]` out-of-bounds, blocking planning
   inside callbacks.
 - `balanced` objective uses RRT* (informed sampling is only defined for path length).
+
+## Known issues
+
+- OMPL 1.6's default nearest-neighbour structure (`NearestNeighborsGNAT`) returns duplicate
+  motions after `ProblemDefinition::fixInvalidInputStates()` moves a start that lies inside an
+  inflated obstacle; `RRTstar::freeMemory()` then frees a motion twice and the node segfaults.
+  The planners use `NearestNeighborsSqrtApprox` instead.
