@@ -126,3 +126,20 @@ g++ -std=c++17 -O2 -march=native -DNDEBUG -I$B/bonxai_core/include -I$B/bonxai_m
 ```
 
 The raw outputs are `run_exact.txt` (0.2 m, exact rays), `run_approx.txt` (0.2 m, approximate rays) and `run_res01.txt` (0.1 m). The recorded `tour.bin` (61 MB) is not in the repository.
+
+## After switching
+
+The planner now builds the map itself (`OccupancyMap`, `CollisionWorld` in `path_planning`), following option 2a above. Collision checks are the plain voxel loop for now; the inflated grid has not been needed yet at 0.2 m. `bonxai_server` and PR #60 are not used.
+
+These figures were measured afterwards on the same recorded tour and in SITL:
+
+| | octomap + FCL (before) | Bonxai in the node (now) |
+|---|---|---|
+| Map update per scan, SITL | 13.4 ms insert, plus publish and readBinary | 2.6 ms insert, plus 0.7–5.7 ms snapshot (grows with the map) |
+| `isFree` (1.2 × 1.2 × 0.9 m box) | 2.9 µs | 2.3 µs, agrees on 99.97 % of 20k states |
+| `clearance` (`balanced` objective) | 458 µs (`fcl::distance`) | 7.8 µs, mean difference 7 mm |
+| Walls tour, 4 legs × 3 runs | 10.3–10.6 s open legs, 23–33 s through the walls | the same, 12/12 goals reached |
+
+The switch exposed one problem. On open legs, OMPL's informed sampler returns NaN states once its ellipsoid has collapsed, up to 700k in a 1 s plan. FCL apparently treated those states as free. The voxel loop turned them into an INT_MIN..INT_MAX loop, so they are now rejected before the lookup.
+
+The snapshot is rebuilt from the whole map after every scan, which is why its cost grows with the map: 5.7 ms at 23k occupied voxels. If maps get much larger, rebuild it at a lower rate or only around the voxels that changed.
