@@ -9,6 +9,7 @@
 #include <octomap_msgs/conversions.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
+#include <ompl/datastructures/NearestNeighborsSqrtApprox.h>
 #include <ompl/base/objectives/PathLengthOptimizationObjective.h>
 #include <ompl/base/objectives/StateCostIntegralObjective.h>
 #include <ompl/base/OptimizationObjective.h>
@@ -489,11 +490,16 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
     auto p = std::make_shared<og::InformedRRTstar>(si);
     p->setRange(planner_range_);
     p->setKNearest(k_nearest_);
+    // OMPL 1.6's default NearestNeighborsGNAT returns duplicate motions from list() after
+    // the start state is moved by fixInvalidInputStates(); RRTstar::freeMemory then frees
+    // the same motion twice and segfaults. SqrtApprox has no such bug.
+    p->setNearestNeighbors<ompl::NearestNeighborsSqrtApprox>();
     planner = p;
   } else {
     auto p = std::make_shared<og::RRTstar>(si);
     p->setRange(planner_range_);
     p->setKNearest(k_nearest_);
+    p->setNearestNeighbors<ompl::NearestNeighborsSqrtApprox>();  // see InformedRRTstar above
     planner = p;
   }
   planner->setProblemDefinition(pdef);
