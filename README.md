@@ -137,6 +137,11 @@ request has two levels.
   next one is planned from the segment's end, which lies on the route. The drone flies the
   current segment to its end, the two meet roughly in line, and every join on the walls tours
   kept cruise speed (1.35–1.5 m/s). Only the last segment ends at the goal.
+- **Fallback:** if Informed-RRT* finds no exact path in the window
+  (`local.fallback_to_route`, on by default), the drone flies the A* route up to the local
+  goal instead. The route is already collision free for the planning box, so this is safe,
+  and it keeps the drone moving in tight spaces such as a maze, where RRT* can run out of
+  time between close walls.
 
 `global.enabled: false` turns the global level off. Informed-RRT* then plans all the way to
 the goal over the whole volume, as before.
@@ -162,6 +167,27 @@ Compared with Informed-RRT* to the goal (1 s solves), three SITL walls tours gav
 | Legs through the walls | 26.1 s mean, 22.8–33.1 s, up to 42 m flown | 24.5 s mean, 22.7–27.1 s, 26–27 m |
 | Time spent in RRT* | 20 s over 20 solves | 9 s over 18 solves |
 | Replans because the path was blocked | 8 | 6 |
+
+**Obstacle course.** The `obstacle_course` world (see [Run](#in-simulation-px4-sitl--gazebo))
+has a closed maze of 5 m walls, a field of 36 pillars, a wall with a window and a low wall.
+A four-goal mission reached every goal:
+
+| Leg | Time | Notes |
+|---|---|---|
+| Into the maze | 129 s, 145 m | the route fallback was used 3 times |
+| Through the pillar field | 22–55 s | |
+| Through the window | 23–26 s | |
+| Over the low wall | 16.5 s | |
+
+The maze leg is long because A* treats unmapped space as free: the first route went round the
+outside of the closed maze, and the drone found the entrance only after mapping the walls.
+
+![Gazebo and RViz in the pillar field](docs/images/obstacle_course_forest.jpg)
+*Pillar field. Left Gazebo, right RViz: A* route in cyan, local Informed-RRT\* path in green,
+flown track in orange, mapped obstacles as voxels.*
+
+![Gazebo and RViz in the maze](docs/images/obstacle_course_maze.jpg)
+*Inside the maze; the track shows the first detour round the outside.*
 
 ### 4. Path following
 
@@ -246,14 +272,16 @@ path_planning/
 ├── test/                          gtests: PathTrajectory, OccupancyMap, CollisionWorld, GlobalPlanner
 ├── config/
 │   ├── planner.yaml               all planner and mapping parameters (commented)
-│   └── planner.rviz               RViz2 view: map, cloud, path, drone
+│   └── planner.rviz               RViz2 view: map, cloud, route, path, drone
 ├── launch/
 │   ├── planner.launch.py          planner (+ mapping, Gazebo bridge, RViz2 options)
 │   └── mapping.launch.py          drone_pose, lidar tf, ros_gz_bridge
-├── sim/
+└── sim/
     ├── models/x500_lidar_3d/      Gazebo model: PX4 x500 + 16-channel 3D lidar
-│   └── run_px4_sitl.sh            starts PX4 SITL with that model in the walls world
+    ├── worlds/obstacle_course.sdf maze, pillar field, window wall and low wall
+    └── run_px4_sitl.sh            starts PX4 SITL with that model (walls world by default)
 docs/bonxai_eval/                  Bonxai vs octomap benchmark, scripts and results
+docs/images/                       screenshots used in this README
 ```
 
 ## Requirements
@@ -295,6 +323,7 @@ Every terminal needs `source ~/ros2_ws/install/setup.bash` and
 ```bash
 ros2 run rmw_zenoh_cpp rmw_zenohd                     # Zenoh router: PX4 and ROS 2 meet here
 path_planning/sim/run_px4_sitl.sh                     # PX4 + Gazebo, x500_lidar_3d in the walls world
+# or: PX4_GZ_WORLD=obstacle_course path_planning/sim/run_px4_sitl.sh
 ros2 launch path_planning planner.launch.py use_sim_time:=true auto_arm:=true gz_bridge:=true rviz:=true
 ```
 
@@ -303,7 +332,10 @@ ros2 launch path_planning planner.launch.py use_sim_time:=true auto_arm:=true gz
 - `run_px4_sitl.sh` links the lidar model into PX4 and starts SITL with PX4's Zenoh
   middleware.
 - Set `HEADLESS=1` to run without the Gazebo window, or `PX4_GZ_WORLD=<name>` to pick another
-  world.
+  world. The worlds in `path_planning/sim/worlds` (`obstacle_course`) are linked into PX4, so
+  they can be picked by name.
+- Arguments are passed to the `px4` binary. Add `-d` when running it without a terminal (for
+  example under `nohup`); otherwise PX4's shell prints its prompt in a loop and fills the log.
 
 **What the launch options do:**
 
