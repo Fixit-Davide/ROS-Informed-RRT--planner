@@ -30,7 +30,8 @@
 
   <exec_depend>launch_ros</exec_depend>
   <!-- used by launch/mapping.launch.py -->
-  <exec_depend>pcl_ros</exec_depend>
+  <exec_depend>drone_pose</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>octomap_server</exec_depend>
 
   <export>
