@@ -74,5 +74,6 @@ install(TARGETS ${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY sim DESTINATION share/${PROJECT_NAME} USE_SOURCE_PERMISSIONS)
 
 ament_package()
