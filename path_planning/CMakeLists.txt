@@ -30,6 +30,7 @@ find_package(ompl REQUIRED)
 add_library(${PROJECT_NAME} SHARED
   src/collision_world.cpp
   src/informed_rrt_planner.cpp
+  src/path_trajectory.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -75,5 +76,12 @@ install(TARGETS ${PROJECT_NAME}
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY sim DESTINATION share/${PROJECT_NAME} USE_SOURCE_PERMISSIONS)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_path_trajectory test/test_path_trajectory.cpp src/path_trajectory.cpp)
+  target_include_directories(test_path_trajectory PRIVATE include)
+  target_link_libraries(test_path_trajectory Eigen3::Eigen)
+endif()
 
 ament_package()
