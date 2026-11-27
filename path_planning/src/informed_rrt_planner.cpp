@@ -75,6 +75,11 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   const auto robot_size = toVec(declare_parameter<std::vector<double>>(
       "robot.size", {0.55, 0.55, 0.50}));
   robot_geom_ = std::make_shared<fcl::Boxd>(robot_size.x(), robot_size.y(), robot_size.z());
+  // Paths are planned with a slightly larger box than the one used to check them, so a
+  // few new voxels next to a freshly planned path do not immediately trigger a replan.
+  const double margin = declare_parameter<double>("robot.planning_margin", 0.15);
+  const Eigen::Vector3d plan_size = robot_size + Eigen::Vector3d::Constant(2.0 * margin);
+  robot_plan_geom_ = std::make_shared<fcl::Boxd>(plan_size.x(), plan_size.y(), plan_size.z());
 
   bounds_min_ = toVec(declare_parameter<std::vector<double>>("bounds.min", {-20.0, -20.0, 0.5}));
   bounds_max_ = toVec(declare_parameter<std::vector<double>>("bounds.max", {20.0, 20.0, 4.0}));
@@ -153,6 +158,7 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   {
     std::lock_guard<std::mutex> lk(world_mutex_);
     world_ = std::make_shared<const CollisionWorld>(nullptr, robot_geom_);
+    plan_world_ = std::make_shared<const CollisionWorld>(nullptr, robot_plan_geom_);
   }
 
   ompl::msg::setLogLevel(ompl::msg::LOG_WARN);
@@ -215,10 +221,12 @@ void InformedRRTPlanner::octomapCallback(const octomap_msgs::msg::Octomap::Share
     return;
   }
   abstract.release();
-  auto world = std::make_shared<const CollisionWorld>(
-    std::shared_ptr<const octomap::OcTree>(tree), robot_geom_);
+  const std::shared_ptr<const octomap::OcTree> shared_tree(tree);
+  auto world = std::make_shared<const CollisionWorld>(shared_tree, robot_geom_);
+  auto plan_world = std::make_shared<const CollisionWorld>(shared_tree, robot_plan_geom_);
   std::lock_guard<std::mutex> lk(world_mutex_);
   world_ = std::move(world);
+  plan_world_ = std::move(plan_world);
 }
 
 void InformedRRTPlanner::goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -559,6 +567,12 @@ void InformedRRTPlanner::followTrajectory(double dt)
 // Planning (separate thread so the setpoint stream is never interrupted)
 // ============================================================================
 
+std::shared_ptr<const CollisionWorld> InformedRRTPlanner::planWorld() const
+{
+  std::lock_guard<std::mutex> lk(world_mutex_);
+  return plan_world_;
+}
+
 std::shared_ptr<const CollisionWorld> InformedRRTPlanner::world() const
 {
   std::lock_guard<std::mutex> lk(world_mutex_);
@@ -589,7 +603,7 @@ void InformedRRTPlanner::plannerWorker()
     }
     PlanResult res;
     try {
-      res = solve(req, world());
+      res = solve(req, planWorld());
     } catch (const std::exception & e) {
       RCLCPP_ERROR(get_logger(), "Planner exception: %s", e.what());
       res = PlanResult{false, {}, req.seq};

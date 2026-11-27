@@ -80,7 +80,8 @@ private:
   void plannerWorker();
   PlanResult solve(const PlanRequest & req, std::shared_ptr<const CollisionWorld> world);
   void publishPath(const std::vector<Eigen::Vector3d> & wps);
-  std::shared_ptr<const CollisionWorld> world() const;
+  std::shared_ptr<const CollisionWorld> world() const;       // robot box: path checks
+  std::shared_ptr<const CollisionWorld> planWorld() const;   // box + planning margin
 
   // ---- PX4 ----
   void publishOffboardControlMode();
@@ -111,6 +112,7 @@ private:
   bool auto_arm_, reset_octomap_on_takeoff_;
   int target_system_, target_component_;
   std::shared_ptr<fcl::CollisionGeometryd> robot_geom_;
+  std::shared_ptr<fcl::CollisionGeometryd> robot_plan_geom_;  // robot_geom_ + planning_margin
 
   // ---- ROS interfaces ----
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_sub_;
@@ -154,7 +156,7 @@ private:
 
   // ---- shared with planner thread ----
   mutable std::mutex world_mutex_;
-  std::shared_ptr<const CollisionWorld> world_;
+  std::shared_ptr<const CollisionWorld> world_, plan_world_;
   std::mutex plan_mutex_;
   std::condition_variable plan_cv_;
   std::optional<PlanRequest> plan_request_;
