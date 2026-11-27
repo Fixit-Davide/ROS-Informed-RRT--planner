@@ -33,6 +33,7 @@
   <exec_depend>drone_pose</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>octomap_server</exec_depend>
+  <exec_depend>rviz2</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

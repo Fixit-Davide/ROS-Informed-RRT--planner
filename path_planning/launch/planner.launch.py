@@ -25,6 +25,17 @@ def generate_launch_description():
                               description='Also start drone_pose + octomap_server'),
         DeclareLaunchArgument('gz_bridge', default_value='false',
                               description='Bridge the Gazebo lidar cloud and /clock (SITL)'),
+        DeclareLaunchArgument('rviz', default_value='false',
+                              description='Open RViz2 with the planner view (config/planner.rviz)'),
+
+        Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            arguments=['-d', os.path.join(share, 'config', 'planner.rviz')],
+            parameters=[{'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}],
+            condition=IfCondition(LaunchConfiguration('rviz')),
+        ),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'mapping.launch.py')),
