@@ -1,0 +1,35 @@
+1299 scans, 3912 points/scan, resolution 0.20 m, max_range 15.0 m, Bonxai rays approximate
+
+Map update per scan [ms]
+  octomap insertScan + prune         mean   12.995  p50   12.831  p95   17.192  max   27.651  total   16880.8 ms
+  Bonxai insertPointCloud            mean    1.254  p50    1.247  p95    1.809  max    3.062  total    1629.4 ms
+  speed-up 10.36x
+
+Publishing / transport, sampled every 10 scans [ms]
+  octomap leaf walk (occupied)       mean    2.155  p50    2.559  p95    3.039  max    3.313  total     282.4 ms
+  Bonxai getOccupiedVoxels           mean    1.177  p50    1.281  p95    1.813  max    1.873  total     154.2 ms
+  octomap writeBinary                mean    1.488  p50    1.702  p95    2.047  max    2.272  total     195.0 ms
+  octomap readBinary (planner)       mean    3.994  p50    4.643  p95    5.314  max    5.683  total     523.2 ms
+  Bonxai Serialize                   mean    3.736  p50    4.358  p95    4.966  max    5.541  total     489.4 ms
+  Bonxai Deserialize                 mean    3.478  p50    4.080  p95    4.503  max    5.177  total     455.7 ms
+  final message size: octomap binary 26.7 kB, Bonxai serialised 818.0 kB
+
+Memory (library's own accounting) [kB]
+  scan   octomap    Bonxai
+     0     342.0     261.1
+   160     687.4     583.4
+   320     935.5     740.5
+   480    1823.6    1366.5
+   640    1952.2    1417.8
+   800    2015.2    1482.6
+   960    2008.5    1482.6
+  1120    2008.7    1482.6
+  1280    2009.1    1482.6
+  1298    2008.9    1482.6   (final)
+
+Occupied voxels: octomap 20405, Bonxai 22185, both 19929, IoU 0.879
+
+Collision check, robot box 1.20x1.20x0.90 m, 200000 random states (82.7% free by FCL)
+  FCL box vs OcTree (current)          3.679 us/check
+  voxel loop over octomap             13.167 us/check  (disagrees with FCL on 0)
+  voxel loop over Bonxai               3.028 us/check  (disagrees with octomap loop on 178 = 0.09%)
