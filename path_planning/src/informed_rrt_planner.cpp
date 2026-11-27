@@ -6,8 +6,11 @@
 #include <functional>
 #include <limits>
 
-#include <octomap_msgs/conversions.h>
+#include <Eigen/Geometry>
+
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/create_timer_ros.hpp>
 
 #include <ompl/datastructures/NearestNeighborsSqrtApprox.h>
 #include <ompl/base/objectives/PathLengthOptimizationObjective.h>
@@ -74,12 +77,25 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
 
   const auto robot_size = toVec(declare_parameter<std::vector<double>>(
       "robot.size", {0.55, 0.55, 0.50}));
-  robot_geom_ = std::make_shared<fcl::Boxd>(robot_size.x(), robot_size.y(), robot_size.z());
+  robot_size_ = robot_size;
   // Paths are planned with a slightly larger box than the one used to check them, so a
   // few new voxels next to a freshly planned path do not immediately trigger a replan.
   const double margin = declare_parameter<double>("robot.planning_margin", 0.15);
-  const Eigen::Vector3d plan_size = robot_size + Eigen::Vector3d::Constant(2.0 * margin);
-  robot_plan_geom_ = std::make_shared<fcl::Boxd>(plan_size.x(), plan_size.y(), plan_size.z());
+  robot_plan_size_ = robot_size + Eigen::Vector3d::Constant(2.0 * margin);
+
+  MapOptions map_opt;
+  map_opt.resolution = declare_parameter<double>("mapping.resolution", 0.2);
+  map_opt.max_range = declare_parameter<double>("mapping.max_range", 15.0);
+  map_opt.min_z = declare_parameter<double>("mapping.min_z", 0.3);
+  map_opt.max_z = declare_parameter<double>("mapping.max_z", 6.0);
+  map_opt.prob_hit = declare_parameter<double>("mapping.sensor_model.hit", 0.7);
+  map_opt.prob_miss = declare_parameter<double>("mapping.sensor_model.miss", 0.4);
+  map_opt.clamp_min = declare_parameter<double>("mapping.sensor_model.min", 0.12);
+  map_opt.clamp_max = declare_parameter<double>("mapping.sensor_model.max", 0.97);
+  map_opt.exact_rays = declare_parameter<bool>("mapping.exact_rays", true);
+  const double map_publish_rate = declare_parameter<double>("mapping.publish_rate_hz", 2.0);
+  map_publish_period_ = map_publish_rate > 0.0 ? 1.0 / map_publish_rate : 0.0;
+  map_ = std::make_unique<OccupancyMap>(map_opt);
 
   bounds_min_ = toVec(declare_parameter<std::vector<double>>("bounds.min", {-20.0, -20.0, 0.5}));
   bounds_max_ = toVec(declare_parameter<std::vector<double>>("bounds.max", {20.0, 20.0, 4.0}));
@@ -110,7 +126,7 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
   stop_margin_ = declare_parameter<double>("control.stop_margin", 0.5);
   max_attempts_ = static_cast<int>(declare_parameter<int>("planner.max_attempts", 3));
   auto_arm_ = declare_parameter<bool>("control.auto_arm", false);
-  reset_octomap_on_takeoff_ = declare_parameter<bool>("control.reset_octomap_on_takeoff", true);
+  reset_map_on_takeoff_ = declare_parameter<bool>("control.reset_map_on_takeoff", true);
 
   target_system_ = declare_parameter<int>("px4.target_system", 1);
   target_component_ = declare_parameter<int>("px4.target_component", 1);
@@ -125,10 +141,8 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
     "topics.trajectory_setpoint", "/fmu/in/trajectory_setpoint");
   const auto t_command = declare_parameter<std::string>(
     "topics.vehicle_command", "/fmu/in/vehicle_command");
-  const auto t_octomap = declare_parameter<std::string>("topics.octomap", "/octomap_binary");
+  const auto t_cloud = declare_parameter<std::string>("topics.cloud", "/lidar/points");
   const auto t_goal = declare_parameter<std::string>("topics.goal", "/goal_pose");
-  const auto s_reset = declare_parameter<std::string>(
-    "topics.octomap_reset_service", "/octomap_server/reset");
 
   // ---------------- interfaces ----------------
   const auto px4_qos = rclcpp::SensorDataQoS().keep_last(5);
@@ -136,9 +150,6 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
     t_odom, px4_qos, std::bind(&InformedRRTPlanner::odometryCallback, this, std::placeholders::_1));
   status_sub_ = create_subscription<VehicleStatus>(
     t_status, px4_qos, std::bind(&InformedRRTPlanner::statusCallback, this, std::placeholders::_1));
-  octomap_sub_ = create_subscription<octomap_msgs::msg::Octomap>(
-    t_octomap, rclcpp::QoS(1),
-    std::bind(&InformedRRTPlanner::octomapCallback, this, std::placeholders::_1));
   goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
     t_goal, rclcpp::QoS(1),
     std::bind(&InformedRRTPlanner::goalCallback, this, std::placeholders::_1));
@@ -150,16 +161,26 @@ InformedRRTPlanner::InformedRRTPlanner(const rclcpp::NodeOptions & options)
     "~/path_markers", rclcpp::QoS(1).transient_local());
   path_pub_ = create_publisher<nav_msgs::msg::Path>(
     "~/planned_path", rclcpp::QoS(1).transient_local());
-  octomap_reset_client_ = create_client<std_srvs::srv::Empty>(s_reset);
+  map_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+    "~/occupied_voxels", rclcpp::QoS(1).transient_local());
+  reset_map_srv_ = create_service<std_srvs::srv::Empty>(
+    "~/reset_map",
+    [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
+    std::shared_ptr<std_srvs::srv::Empty::Response>) {resetMap();});
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
+  tf_buffer_->setCreateTimerInterface(std::make_shared<tf2_ros::CreateTimerROS>(
+      get_node_base_interface(), get_node_timers_interface()));
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-  {
-    std::lock_guard<std::mutex> lk(world_mutex_);
-    world_ = std::make_shared<const CollisionWorld>(nullptr, robot_geom_);
-    plan_world_ = std::make_shared<const CollisionWorld>(nullptr, robot_plan_geom_);
-  }
+  // Scans are held back until map_frame -> cloud frame is known at their stamp.
+  cloud_sub_.subscribe(this, t_cloud, rclcpp::SensorDataQoS());
+  cloud_filter_ = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>>(
+    cloud_sub_, *tf_buffer_, map_frame_, 5, get_node_logging_interface(),
+    get_node_clock_interface(), 1s);
+  cloud_filter_->registerCallback(&InformedRRTPlanner::cloudCallback, this);
+
+  updateWorlds();
 
   ompl::msg::setLogLevel(ompl::msg::LOG_WARN);
   planner_thread_ = std::thread(&InformedRRTPlanner::plannerWorker, this);
@@ -206,27 +227,104 @@ void InformedRRTPlanner::statusCallback(const VehicleStatus::SharedPtr msg)
   status_received_ = true;
 }
 
-void InformedRRTPlanner::octomapCallback(const octomap_msgs::msg::Octomap::SharedPtr msg)
+void InformedRRTPlanner::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg)
 {
-  if (!msg->header.frame_id.empty() && msg->header.frame_id != map_frame_) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 5000, "Octomap frame '%s' differs from map_frame '%s'",
-      msg->header.frame_id.c_str(), map_frame_.c_str());
-  }
-  std::unique_ptr<octomap::AbstractOcTree> abstract(
-    msg->binary ? octomap_msgs::binaryMsgToMap(*msg) : octomap_msgs::fullMsgToMap(*msg));
-  auto * tree = dynamic_cast<octomap::OcTree *>(abstract.get());
-  if (!tree) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000, "Received octomap is not an OcTree");
+  geometry_msgs::msg::TransformStamped tf;
+  try {
+    tf = tf_buffer_->lookupTransform(map_frame_, msg->header.frame_id, msg->header.stamp);
+  } catch (const tf2::TransformException & e) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Dropping scan: %s", e.what());
     return;
   }
-  abstract.release();
-  const std::shared_ptr<const octomap::OcTree> shared_tree(tree);
-  auto world = std::make_shared<const CollisionWorld>(shared_tree, robot_geom_);
-  auto plan_world = std::make_shared<const CollisionWorld>(shared_tree, robot_plan_geom_);
-  std::lock_guard<std::mutex> lk(world_mutex_);
-  world_ = std::move(world);
-  plan_world_ = std::move(plan_world);
+  const auto t0 = std::chrono::steady_clock::now();
+
+  const auto & tr = tf.transform.translation;
+  const auto & q = tf.transform.rotation;
+  const Eigen::Matrix3d rot = Eigen::Quaterniond(q.w, q.x, q.y, q.z).toRotationMatrix();
+  const Eigen::Vector3d origin(tr.x, tr.y, tr.z);
+
+  cloud_points_.clear();
+  cloud_points_.reserve(static_cast<size_t>(msg->width) * msg->height);
+  sensor_msgs::PointCloud2ConstIterator<float> x(*msg, "x"), y(*msg, "y"), z(*msg, "z");
+  for (; x != x.end(); ++x, ++y, ++z) {
+    if (!std::isfinite(*x) || !std::isfinite(*y) || !std::isfinite(*z)) {continue;}
+    cloud_points_.push_back(rot * Eigen::Vector3d(*x, *y, *z) + origin);
+  }
+  map_->insert(cloud_points_, origin);
+  const auto t1 = std::chrono::steady_clock::now();
+  updateWorlds();
+  const auto t2 = std::chrono::steady_clock::now();
+
+  insert_ms_sum_ += std::chrono::duration<double, std::milli>(t1 - t0).count();
+  snapshot_ms_sum_ += std::chrono::duration<double, std::milli>(t2 - t1).count();
+  ++scans_since_log_;
+  ++scans_total_;
+  if (scans_since_log_ >= 100) {
+    const double n = static_cast<double>(scans_since_log_);
+    RCLCPP_INFO(
+      get_logger(), "Map: %zu scans, %zu occupied voxels, %.2f MB; per scan %.2f ms insert + "
+      "%.2f ms snapshot", scans_total_, last_snapshot_size_,
+      static_cast<double>(map_->memoryUsage()) / (1024.0 * 1024.0),
+      insert_ms_sum_ / n, snapshot_ms_sum_ / n);
+    insert_ms_sum_ = snapshot_ms_sum_ = 0.0;
+    scans_since_log_ = 0;
+  }
+}
+
+void InformedRRTPlanner::updateWorlds()
+{
+  auto snap = map_->snapshot();
+  last_snapshot_size_ = snap->size();
+  auto world = std::make_shared<const CollisionWorld>(snap, robot_size_);
+  auto plan_world = std::make_shared<const CollisionWorld>(snap, robot_plan_size_);
+  {
+    std::lock_guard<std::mutex> lk(world_mutex_);
+    world_ = std::move(world);
+    plan_world_ = std::move(plan_world);
+  }
+  const auto now = this->now();
+  if (map_publish_period_ > 0.0 && map_pub_->get_subscription_count() > 0 &&
+    (!last_map_publish_ || (now - *last_map_publish_).seconds() >= map_publish_period_))
+  {
+    last_map_publish_ = now;
+    publishOccupiedVoxels(*snap);
+  }
+}
+
+void InformedRRTPlanner::publishOccupiedVoxels(const OccupancySnapshot & snap)
+{
+  visualization_msgs::msg::Marker m;
+  m.header.frame_id = map_frame_;
+  m.header.stamp = now();
+  m.ns = "occupied";
+  m.id = 0;
+  m.type = visualization_msgs::msg::Marker::CUBE_LIST;
+  m.action = visualization_msgs::msg::Marker::ADD;
+  m.pose.orientation.w = 1.0;
+  const double res = snap.resolution();
+  m.scale.x = m.scale.y = m.scale.z = res;
+  m.points.reserve(snap.size());
+  m.colors.reserve(snap.size());
+  // Colour by height, like octomap_server's height map: blue (low) -> red (high).
+  const double z_lo = map_->options().min_z, z_hi = bounds_max_.z() + 1.0;
+  for (const auto & c : snap.voxels()) {
+    geometry_msgs::msg::Point p;
+    p.x = (c.x + 0.5) * res;
+    p.y = (c.y + 0.5) * res;
+    p.z = (c.z + 0.5) * res;
+    m.points.push_back(p);
+    const double h = std::clamp((p.z - z_lo) / std::max(z_hi - z_lo, 1e-3), 0.0, 1.0);
+    std_msgs::msg::ColorRGBA col;
+    col.r = static_cast<float>(std::clamp(2.0 * h - 0.5, 0.0, 1.0));
+    col.g = static_cast<float>(1.0 - std::abs(2.0 * h - 1.0));
+    col.b = static_cast<float>(std::clamp(1.5 - 2.0 * h, 0.0, 1.0));
+    col.a = 1.0f;
+    m.colors.push_back(col);
+  }
+  if (m.points.empty()) {m.action = visualization_msgs::msg::Marker::DELETE;}
+  visualization_msgs::msg::MarkerArray arr;
+  arr.markers.push_back(std::move(m));
+  map_pub_->publish(arr);
 }
 
 void InformedRRTPlanner::goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -355,7 +453,7 @@ void InformedRRTPlanner::controlLoop()
           "Streaming setpoints: switch to OFFBOARD and arm from the RC/GCS (or set control.auto_arm)");
       }
       if (status_received_ && isOffboard() && isArmed()) {
-        if (reset_octomap_on_takeoff_) {resetOctomap();}
+        if (reset_map_on_takeoff_) {resetMap();}
         if (position_.z() > bounds_min_.z()) {
           RCLCPP_INFO(get_logger(), "Already airborne, skipping takeoff");
           enterHover(position_);
@@ -619,7 +717,7 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
 {
   PlanResult out{false, {}, req.seq};
   if (!w->hasMap()) {
-    RCLCPP_WARN(get_logger(), "No octomap received yet: planning in free space");
+    RCLCPP_WARN(get_logger(), "Map is empty (no lidar scan yet): planning in free space");
   }
 
   auto space = std::make_shared<ob::RealVectorStateSpace>(3);
@@ -631,9 +729,13 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
   space->setBounds(bounds);
 
   auto si = std::make_shared<ob::SpaceInformation>(space);
+  // NaN fails no bounds comparison, so satisfiesBounds() accepts it: count such states.
+  auto non_finite = std::make_shared<std::atomic<size_t>>(0);
   si->setStateValidityChecker(
-    [w, si_raw = si.get()](const ob::State * s) {
-      return si_raw->satisfiesBounds(s) && w->isFree(toVec(s));
+    [w, si_raw = si.get(), non_finite](const ob::State * s) {
+      const Eigen::Vector3d p = toVec(s);
+      if (!p.allFinite()) {++*non_finite; return false;}
+      return si_raw->satisfiesBounds(s) && w->isFree(p);
     });
   si->setStateValidityCheckingResolution(check_resolution_ / space->getMaximumExtent());
   si->setup();
@@ -700,6 +802,9 @@ InformedRRTPlanner::PlanResult InformedRRTPlanner::solve(
 
   const auto t0 = std::chrono::steady_clock::now();
   const ob::PlannerStatus status = planner->solve(ptc);
+  if (*non_finite > 0) {
+    RCLCPP_WARN(get_logger(), "OMPL produced %zu non-finite states (rejected)", non_finite->load());
+  }
   if (status != ob::PlannerStatus::EXACT_SOLUTION) {
     RCLCPP_WARN(get_logger(), "Planner status: %s", status.asString().c_str());
     return out;
@@ -862,14 +967,12 @@ void InformedRRTPlanner::engageOffboardAndArm()
   }
 }
 
-void InformedRRTPlanner::resetOctomap()
+void InformedRRTPlanner::resetMap()
 {
-  if (!octomap_reset_client_->service_is_ready()) {
-    RCLCPP_WARN(get_logger(), "Octomap reset service not available, keeping current map");
-    return;
-  }
-  octomap_reset_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
-  RCLCPP_INFO(get_logger(), "Resetting the initial octomap");
+  map_->reset();
+  last_map_publish_.reset();
+  updateWorlds();
+  RCLCPP_INFO(get_logger(), "Map reset");
 }
 
 }  // namespace path_planning

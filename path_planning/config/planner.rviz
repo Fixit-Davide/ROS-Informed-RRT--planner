@@ -35,10 +35,10 @@ Visualization Manager:
       Axis: Z
       Decay Time: 0
     - Class: rviz_default_plugins/MarkerArray
-      Name: Octomap occupied
+      Name: Occupied voxels
       Enabled: true
       Topic:
-        Value: /occupied_cells_vis_array
+        Value: /path_planning/occupied_voxels
         Reliability Policy: Reliable
         Durability Policy: Volatile
         History Policy: Keep Last

@@ -1,5 +1,5 @@
-// ROS 2 Informed-RRT* planner (OMPL + FCL + Octomap) driving a PX4 vehicle in offboard mode
-// over px4_msgs (PX4 Zenoh client with rmw_zenoh, or the uXRCE-DDS bridge).
+// ROS 2 Informed-RRT* planner (OMPL + a Bonxai occupancy map built from the lidar) driving a
+// PX4 vehicle in offboard mode over px4_msgs (PX4 Zenoh client with rmw_zenoh, or uXRCE-DDS).
 #ifndef PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
 #define PATH_PLANNING__INFORMED_RRT_PLANNER_HPP_
 
@@ -14,12 +14,14 @@
 
 #include <Eigen/Core>
 #include <rclcpp/rclcpp.hpp>
+#include <message_filters/subscriber.hpp>
 #include <tf2_ros/buffer.hpp>
+#include <tf2_ros/message_filter.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
-#include <octomap_msgs/msg/octomap.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -30,6 +32,7 @@
 #include <px4_msgs/msg/vehicle_status.hpp>
 
 #include "path_planning/collision_world.hpp"
+#include "path_planning/occupancy_map.hpp"
 #include "path_planning/path_trajectory.hpp"
 #include "path_planning/px4_frames.hpp"
 
@@ -64,7 +67,7 @@ private:
   // ---- callbacks ----
   void odometryCallback(const px4_msgs::msg::VehicleOdometry::SharedPtr msg);
   void statusCallback(const px4_msgs::msg::VehicleStatus::SharedPtr msg);
-  void octomapCallback(const octomap_msgs::msg::Octomap::SharedPtr msg);
+  void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg);
   void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void controlLoop();
   void replanCheck();
@@ -95,7 +98,9 @@ private:
   bool isArmed() const;
   uint64_t px4Timestamp() const;
   void enterHover(const Eigen::Vector3d & p);
-  void resetOctomap();
+  void resetMap();
+  void updateWorlds();        // new collision snapshots from map_
+  void publishOccupiedVoxels(const OccupancySnapshot & snap);
 
   // ---- parameters ----
   std::string map_frame_;
@@ -109,25 +114,35 @@ private:
   TrajectoryLimits traj_limits_;
   double max_yaw_rate_, lag_soft_, lag_max_, stop_margin_;
   int max_attempts_;
-  bool auto_arm_, reset_octomap_on_takeoff_;
+  bool auto_arm_, reset_map_on_takeoff_;
   int target_system_, target_component_;
-  std::shared_ptr<fcl::CollisionGeometryd> robot_geom_;
-  std::shared_ptr<fcl::CollisionGeometryd> robot_plan_geom_;  // robot_geom_ + planning_margin
+  Eigen::Vector3d robot_size_;       // collision box [m]
+  Eigen::Vector3d robot_plan_size_;  // robot_size_ + planning_margin per side
+  double map_publish_period_{0.5};   // [s] occupied voxel markers (0 = off)
 
   // ---- ROS interfaces ----
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr status_sub_;
-  rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_pub_;
   rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr command_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
-  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr octomap_reset_client_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr reset_map_srv_;
   rclcpp::TimerBase::SharedPtr control_timer_, replan_timer_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  message_filters::Subscriber<sensor_msgs::msg::PointCloud2> cloud_sub_;
+  std::shared_ptr<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>> cloud_filter_;
+
+  // ---- map (executor thread only) ----
+  std::unique_ptr<OccupancyMap> map_;
+  std::vector<Eigen::Vector3d> cloud_points_;
+  std::optional<rclcpp::Time> last_map_publish_;
+  double insert_ms_sum_{0.0}, snapshot_ms_sum_{0.0};
+  size_t scans_since_log_{0}, scans_total_{0}, last_snapshot_size_{0};
 
   // ---- vehicle state (executor thread only) ----
   FlightState state_{FlightState::WAIT_FOR_ODOM};

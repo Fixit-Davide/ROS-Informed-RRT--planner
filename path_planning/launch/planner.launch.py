@@ -22,7 +22,7 @@ def generate_launch_description():
         DeclareLaunchArgument('auto_arm', default_value='false',
                               description='Let the planner switch PX4 to OFFBOARD and arm'),
         DeclareLaunchArgument('mapping', default_value='true',
-                              description='Also start drone_pose + octomap_server'),
+                              description='Also start drone_pose and the lidar tf (mapping.launch.py)'),
         DeclareLaunchArgument('gz_bridge', default_value='false',
                               description='Bridge the Gazebo lidar cloud and /clock (SITL)'),
         DeclareLaunchArgument('rviz', default_value='false',

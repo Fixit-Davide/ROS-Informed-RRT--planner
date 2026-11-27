@@ -11,11 +11,11 @@
 namespace path_planning
 {
 
-// World frame convention used for the octomap / planning frame (z-up, right handed).
+// World frame convention used for the map / planning frame (z-up, right handed).
 //  - ENU: x = East,  y = North, z = Up   (REP-103, px4_ros_com frame_transforms)
 //  - NWU: x = North, y = West,  z = Up   (what the drone_pose package publishes: x, -y, -z)
 // Both MUST match the convention used by whatever publishes the map -> base_link tf,
-// otherwise the octomap and the planner positions will not line up.
+// otherwise the map and the planner positions will not line up.
 enum class WorldFrame { ENU, NWU };
 
 inline WorldFrame worldFrameFromString(const std::string & s)

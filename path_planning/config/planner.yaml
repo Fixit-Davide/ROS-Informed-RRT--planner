@@ -10,6 +10,21 @@ path_planning:
       size: [0.90, 0.90, 0.60]        # collision box X-Y-Z [m]: x500 is ~0.55 m wide, +~0.17 m margin per side
       planning_margin: 0.15           # [m] per side: plan with a larger box than the path check uses
 
+    mapping:                          # Bonxai occupancy map built in this node from topics.cloud
+      resolution: 0.20                # [m] voxel edge
+      max_range: 15.0                 # [m] rays longer than this only clear free space
+      # Points outside [min_z, max_z] in map_frame are dropped before ray casting. 0.3 m keeps
+      # the ground out of the map: the planner flies at bounds.min z = 0.5 m and above.
+      min_z: 0.3
+      max_z: 6.0
+      sensor_model:                   # same defaults as octomap_server
+        hit: 0.7
+        miss: 0.4
+        min: 0.12
+        max: 0.97
+      exact_rays: true                # false: Bresenham rays, ~20 % faster, slightly coarser
+      publish_rate_hz: 2.0            # ~/occupied_voxels markers for RViz (0 = off)
+
     bounds:                           # planning volume in map_frame [m]
       min: [-20.0, -20.0, 0.5]
       max: [20.0, 20.0, 4.0]
@@ -45,7 +60,7 @@ path_planning:
       tracking_lag_max: 2.0           # [m] ... and waits for the drone at this distance
       stop_margin: 0.5                # [m] stop this far before a newly blocked path section
       auto_arm: false                 # true: node switches to OFFBOARD and arms by itself (SITL)
-      reset_octomap_on_takeoff: true
+      reset_map_on_takeoff: true      # forget what the lidar saw on the ground
 
     px4:
       target_system: 1
@@ -57,6 +72,5 @@ path_planning:
       offboard_control_mode: /fmu/in/offboard_control_mode
       trajectory_setpoint: /fmu/in/trajectory_setpoint
       vehicle_command: /fmu/in/vehicle_command
-      octomap: /octomap_binary
+      cloud: /lidar/points                         # PointCloud2, any frame with a tf to map_frame
       goal: /goal_pose                             # RViz2 "2D Goal Pose"
-      octomap_reset_service: /octomap_server/reset
