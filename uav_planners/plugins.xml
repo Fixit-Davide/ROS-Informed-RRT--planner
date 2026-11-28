@@ -1,0 +1,10 @@
+<class_libraries>
+  <library path="uav_planners">
+    <class type="uav_planners::AStarPlanner" base_class_type="uav_nav_core::GlobalPlanner">
+      <description>A* over a 3D lattice of robot positions with line-of-sight shortcuts.</description>
+    </class>
+    <class type="uav_planners::InformedRRTStar" base_class_type="uav_nav_core::LocalPlanner">
+      <description>OMPL Informed-RRT* (RRT* for the balanced objective) inside a window.</description>
+    </class>
+  </library>
+</class_libraries>

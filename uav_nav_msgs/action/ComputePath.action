@@ -1,0 +1,19 @@
+# Plan a path from start to goal: a global route over the planning volume, then a local path
+# along its first horizon metres (see the planner server's parameters).
+geometry_msgs/PointStamped start
+geometry_msgs/PointStamped goal
+float64 solve_time        # [s] local planner time budget (0: the server's default)
+---
+uint16 NONE=0
+uint16 CANCELED=1         # canceled or superseded by a newer goal
+uint16 NO_ROUTE=2         # the global planner found no route to the goal
+uint16 NO_LOCAL_PATH=3    # the local planner failed (and the route fallback is off)
+uint16 INVALID_REQUEST=4  # non-finite start / goal, wrong frame
+uint16 error_code
+string error_msg
+nav_msgs/Path path        # local path to fly, starting at start
+nav_msgs/Path route       # global route (empty when the global planner is disabled)
+bool final                # path ends at the goal (otherwise plan the next segment en route)
+float64 route_time        # [s]
+float64 local_time        # [s]
+---

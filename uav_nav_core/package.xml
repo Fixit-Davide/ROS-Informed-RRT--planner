@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>uav_nav_core</name>
+  <version>3.0.0</version>
+  <description>
+    Shared pieces of the UAV navigation servers: the Bonxai occupancy map and its immutable
+    snapshots, box collision checks, the VoxelMap type adapter (zero-copy intra-process map
+    transport) and the global / local planner plugin interfaces.
+  </description>
+  <maintainer email="graziato.davide@outlook.it">Davide Graziato</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>std_msgs</depend>
+  <depend>uav_nav_msgs</depend>
+  <depend>bonxai_ros</depend>
+  <depend>eigen</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

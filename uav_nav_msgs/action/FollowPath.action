@@ -1,0 +1,20 @@
+# Fly a path. A new goal replaces the running one: while moving, the new path is spliced onto
+# the current reference (at the point the last GetReplanStart call returned, if the reference
+# has not passed it yet), so the vehicle never stops between segments. Canceling the goal
+# brakes along the path and then hovers.
+nav_msgs/Path path
+bool final                # path ends at the navigation goal: succeed once it is reached
+---
+uint16 NONE=0
+uint16 REPLACED=1         # a newer path took over
+uint16 CANCELED=2
+uint16 INVALID_PATH=3     # fewer than two distinct points, non-finite, wrong frame
+uint16 NOT_AIRBORNE=4     # vehicle is not hovering or following a path
+uint16 PILOT_OVERRIDE=5   # vehicle left OFFBOARD or disarmed
+uint16 error_code
+string error_msg
+---
+float64 distance_remaining  # [m] along the reference trajectory
+float64 speed               # [m/s] reference speed
+bool blocked                # the path ahead is blocked: braking before it, replan needed
+float64 blocked_distance    # [m] from the reference to the blocked point

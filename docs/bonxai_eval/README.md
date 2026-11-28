@@ -129,7 +129,7 @@ The raw outputs are `run_exact.txt` (0.2 m, exact rays), `run_approx.txt` (0.2 m
 
 ## After switching
 
-The planner now builds the map itself (`OccupancyMap`, `CollisionWorld` in `path_planning`), following option 2a above. Collision checks are the plain voxel loop for now; the inflated grid has not been needed yet at 0.2 m. `bonxai_server` and PR #60 are not used.
+The map is now built by Bonxai in the navigation stack (`OccupancyMap`, `CollisionWorld` in `uav_nav_core`, run by `uav_map_server`), following option 2a above. Collision checks are the plain voxel loop for now; the inflated grid has not been needed yet at 0.2 m. `bonxai_server` and PR #60 are not used.
 
 These figures were measured afterwards on the same recorded tour and in SITL:
 
