@@ -22,6 +22,7 @@ public:
   bool isFree(const Eigen::Vector3d & p) const;
   // Distance from the box centred at `p` to the closest occupied voxel (0 if overlapping).
   double clearance(const Eigen::Vector3d & p) const;
+  Eigen::Vector3d boxSize() const {return 2.0 * half_;}
   // Discretised straight-line check between `a` and `b`.
   bool isSegmentFree(const Eigen::Vector3d & a, const Eigen::Vector3d & b, double step) const;
 
