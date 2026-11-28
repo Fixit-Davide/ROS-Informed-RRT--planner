@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  PX4 x500 + 16-channel 3D lidar (VLP-16-like) for the path_planning octomap pipeline.
+  PX4 x500 + 16-channel 3D lidar (VLP-16-like) for the UAV navigation servers (uav_map_server builds the map from it).
   Point cloud: gz topic /lidar/points (gz.msgs.PointCloudPacked), frame_id "lidar_link".
   The base_link -> lidar_link static tf in mapping.launch.py must match the joint pose below.
 -->
