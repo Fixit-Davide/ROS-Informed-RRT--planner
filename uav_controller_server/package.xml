@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>uav_controller_server</name>
+  <version>3.0.0</version>
+  <description>
+    Lifecycle controller server for PX4 offboard flight: setpoint stream, takeoff and hover,
+    jerk-limited path following with segment splicing (follow_path action), and braking
+    before path sections that the zero-copy map shows blocked.
+  </description>
+  <maintainer email="graziato.davide@outlook.it">Davide Graziato</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>px4_msgs</depend>
+  <depend>eigen</depend>
+  <depend>uav_nav_core</depend>
+  <depend>uav_nav_msgs</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
