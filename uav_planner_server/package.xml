@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>uav_planner_server</name>
+  <version>3.0.0</version>
+  <description>
+    Lifecycle planner server: compute_path action with a global route plugin and a local
+    path plugin along the route (A* and Informed-RRT* from uav_planners by default).
+  </description>
+  <maintainer email="graziato.davide@outlook.it">Davide Graziato</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>pluginlib</depend>
+  <depend>uav_nav_core</depend>
+  <depend>uav_nav_msgs</depend>
+
+  <exec_depend>uav_planners</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
