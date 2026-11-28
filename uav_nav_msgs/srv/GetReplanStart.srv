@@ -1,0 +1,7 @@
+# Where a plan that starts now should start, so it can be spliced onto the path being flown.
+# The controller remembers the answer: the next FollowPath goal is joined there.
+float64 lookahead_time    # [s] expected planning time: the reference keeps moving meanwhile
+bool from_end             # plan the next segment from the end of the current one
+---
+bool following            # false: not following a path, start = the hold position
+geometry_msgs/Point start
