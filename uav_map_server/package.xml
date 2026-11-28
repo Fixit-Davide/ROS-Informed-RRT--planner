@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>uav_map_server</name>
+  <version>3.0.0</version>
+  <description>
+    Lifecycle map server: builds a Bonxai 3D occupancy map from a lidar point cloud and
+    publishes its occupied voxels as a zero-copy (intra-process) uav_nav_core::VoxelMap.
+  </description>
+  <maintainer email="graziato.davide@outlook.it">Davide Graziato</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>message_filters</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>uav_nav_core</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
