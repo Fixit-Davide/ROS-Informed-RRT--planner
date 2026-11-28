@@ -75,51 +75,45 @@ navigator. The stages are described below, after how the servers talk to each ot
 
 ### How the servers communicate
 
-**Data routes.** Every arrow is one topic, action or service, labeled with its name and
-message type. Thick arrows stay inside the container and are zero-copy. Dotted arrows are for
-visualization and lifecycle only.
+**Data routes.** Every arrow is a topic, action or service, labeled with its name and
+message. Thick arrows stay inside the container and are zero-copy. Dotted arrows are for
+visualization and lifecycle only. The table below gives the full message types.
 
 ```mermaid
-flowchart LR
-    subgraph EXT["Other processes"]
-        direction TB
-        GZ["Lidar<br/>(ros_gz_bridge in SITL)"]
-        DP["drone_pose"]
-        PX4["PX4 autopilot<br/>(Zenoh client)"]
-        CLIENT["RViz2 2D Goal Pose<br/>or any action client"]
-        LM["lifecycle_manager_navigation<br/>(nav2_lifecycle_manager)"]
-        RVIZ["RViz2"]
-    end
+flowchart TB
+    LIDAR["3D lidar<br/>(ros_gz_bridge in SITL)"]
+    CLIENT["RViz2 or an<br/>action client"]
+    PX4["PX4 autopilot"]
+    DP["drone_pose"]
 
     subgraph C["nav_container: one thread per server, intra-process comms on"]
-        direction TB
         MS["map_server<br/>Bonxai map"]
-        PS["planner_server<br/>AStarPlanner + InformedRRTStar"]
-        CS["controller_server<br/>PX4 offboard + trajectory"]
         NV["navigator"]
+        PS["planner_server<br/>A* + Informed-RRT*"]
+        CS["controller_server<br/>offboard + trajectory"]
     end
 
-    GZ -->|"/lidar/points<br/>sensor_msgs/PointCloud2"| MS
-    PX4 -->|"/fmu/out/vehicle_odometry<br/>px4_msgs/VehicleOdometry"| DP
-    DP -->|"/tf map → base_link<br/>tf2_msgs/TFMessage"| MS
+    LM["nav2_lifecycle_manager"]
+    RVIZ["RViz2"]
 
-    MS ==>|"voxel_map<br/>uav_nav_core::VoxelMap<br/>shared_ptr, no copy"| PS
-    MS ==>|"voxel_map<br/>uav_nav_core::VoxelMap<br/>shared_ptr, no copy"| CS
+    LIDAR -->|"/lidar/points<br/>PointCloud2"| MS
+    PX4 -->|"vehicle_odometry"| DP
+    DP -->|"/tf<br/>map → base_link"| MS
+    CLIENT -->|"/goal_pose PoseStamped<br/>navigate_to_pose action"| NV
 
-    PX4 -->|"/fmu/out/vehicle_odometry, vehicle_status<br/>px4_msgs/VehicleOdometry, VehicleStatus"| CS
-    CS -->|"/fmu/in/offboard_control_mode, trajectory_setpoint, vehicle_command<br/>px4_msgs/OffboardControlMode, TrajectorySetpoint, VehicleCommand<br/>20 Hz"| PX4
-    CS -->|"/map_server/reset_map<br/>std_srvs/Empty (on takeoff)"| MS
+    MS ==>|"voxel_map<br/>VoxelMap, zero-copy"| PS
+    MS ==>|"voxel_map<br/>VoxelMap, zero-copy"| CS
 
-    CLIENT -->|"/goal_pose geometry_msgs/PoseStamped<br/>or navigate_to_pose nav2_msgs/NavigateToPose"| NV
-    CS -->|"/controller_server/state<br/>uav_nav_msgs/ControllerState"| NV
-    NV -->|"compute_path action<br/>uav_nav_msgs/ComputePath"| PS
-    NV -->|"get_replan_start service<br/>uav_nav_msgs/GetReplanStart"| CS
-    NV -->|"follow_path action<br/>uav_nav_msgs/FollowPath<br/>feedback: distance left, blocked"| CS
+    NV -->|"compute_path<br/>action"| PS
+    NV -->|"follow_path action<br/>get_replan_start srv"| CS
+    CS -->|"~/state<br/>ControllerState"| NV
+    CS -->|"reset_map srv<br/>on takeoff"| MS
 
-    MS -.->|"occupied_voxels<br/>MarkerArray"| RVIZ
-    PS -.->|"global_path, local_path<br/>nav_msgs/Path"| RVIZ
-    CS -.->|"trajectory<br/>nav_msgs/Path"| RVIZ
-    LM -.->|"configure / activate<br/>lifecycle_msgs/ChangeState"| C
+    PX4 -->|"/fmu/out/*<br/>odometry, status"| CS
+    CS -->|"/fmu/in/* at 20 Hz<br/>setpoints, commands"| PX4
+
+    LM -.->|"configure, activate"| C
+    C -.->|"voxels, route,<br/>path, trajectory"| RVIZ
 ```
 
 | Exchange | Kind | From → to | Message | Notes |
