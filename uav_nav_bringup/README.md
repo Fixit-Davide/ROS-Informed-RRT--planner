@@ -1,7 +1,8 @@
 # uav_nav_bringup
 
 Launch files, parameters and the RViz view of the UAV navigation servers, plus the PX4 SITL
-model and worlds. The [top-level README](../README.md) explains how the system works; this
+model and worlds. The [top-level README](../README.md) explains how the system works, with
+[diagrams of how the servers communicate](../README.md#how-the-servers-communicate). This
 page is the short reference.
 
 ## Build

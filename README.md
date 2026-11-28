@@ -71,7 +71,136 @@ The four navigation servers are lifecycle components. By default
 (`use_composition:=true`) they are loaded into one component container, one executor
 thread each, so a planner solve or a map update never delays the setpoint stream to PX4.
 `nav2_lifecycle_manager` configures and activates them in order: map, planner, controller,
-navigator. The stages are described below.
+navigator. The stages are described below, after how the servers talk to each other.
+
+### How the servers communicate
+
+**Data routes.** Every arrow is one topic, action or service, labeled with its name and
+message type. Thick arrows stay inside the container and are zero-copy. Dotted arrows are for
+visualization and lifecycle only.
+
+```mermaid
+flowchart LR
+    subgraph EXT["Other processes"]
+        direction TB
+        GZ["Lidar<br/>(ros_gz_bridge in SITL)"]
+        DP["drone_pose"]
+        PX4["PX4 autopilot<br/>(Zenoh client)"]
+        CLIENT["RViz2 2D Goal Pose<br/>or any action client"]
+        LM["lifecycle_manager_navigation<br/>(nav2_lifecycle_manager)"]
+        RVIZ["RViz2"]
+    end
+
+    subgraph C["nav_container: one thread per server, intra-process comms on"]
+        direction TB
+        MS["map_server<br/>Bonxai map"]
+        PS["planner_server<br/>AStarPlanner + InformedRRTStar"]
+        CS["controller_server<br/>PX4 offboard + trajectory"]
+        NV["navigator"]
+    end
+
+    GZ -->|"/lidar/points<br/>sensor_msgs/PointCloud2"| MS
+    PX4 -->|"/fmu/out/vehicle_odometry<br/>px4_msgs/VehicleOdometry"| DP
+    DP -->|"/tf map → base_link<br/>tf2_msgs/TFMessage"| MS
+
+    MS ==>|"voxel_map<br/>uav_nav_core::VoxelMap<br/>shared_ptr, no copy"| PS
+    MS ==>|"voxel_map<br/>uav_nav_core::VoxelMap<br/>shared_ptr, no copy"| CS
+
+    PX4 -->|"/fmu/out/vehicle_odometry, vehicle_status<br/>px4_msgs/VehicleOdometry, VehicleStatus"| CS
+    CS -->|"/fmu/in/offboard_control_mode, trajectory_setpoint, vehicle_command<br/>px4_msgs/OffboardControlMode, TrajectorySetpoint, VehicleCommand<br/>20 Hz"| PX4
+    CS -->|"/map_server/reset_map<br/>std_srvs/Empty (on takeoff)"| MS
+
+    CLIENT -->|"/goal_pose geometry_msgs/PoseStamped<br/>or navigate_to_pose nav2_msgs/NavigateToPose"| NV
+    CS -->|"/controller_server/state<br/>uav_nav_msgs/ControllerState"| NV
+    NV -->|"compute_path action<br/>uav_nav_msgs/ComputePath"| PS
+    NV -->|"get_replan_start service<br/>uav_nav_msgs/GetReplanStart"| CS
+    NV -->|"follow_path action<br/>uav_nav_msgs/FollowPath<br/>feedback: distance left, blocked"| CS
+
+    MS -.->|"occupied_voxels<br/>MarkerArray"| RVIZ
+    PS -.->|"global_path, local_path<br/>nav_msgs/Path"| RVIZ
+    CS -.->|"trajectory<br/>nav_msgs/Path"| RVIZ
+    LM -.->|"configure / activate<br/>lifecycle_msgs/ChangeState"| C
+```
+
+| Exchange | Kind | From → to | Message | Notes |
+|-|-|-|-|-|
+| `/lidar/points` | topic | lidar → map_server | `sensor_msgs/PointCloud2` | sensor-data QoS, held until its tf is known |
+| `voxel_map` | topic | map_server → planner, controller | `uav_nav_core::VoxelMap` ⇄ `uav_nav_msgs/VoxelMap` | volatile, keep last 1, after every scan; zero-copy in the container |
+| `compute_path` | action | navigator → planner_server | `uav_nav_msgs/ComputePath` | goal: start, goal, solve time; result: path, route, `final` |
+| `get_replan_start` | service | navigator → controller_server | `uav_nav_msgs/GetReplanStart` | where the next plan must start; the controller splices there |
+| `follow_path` | action | navigator → controller_server | `uav_nav_msgs/FollowPath` | a new goal replaces the old one (`REPLACED`); cancel = brake and hover |
+| `~/state` | topic | controller_server → navigator | `uav_nav_msgs/ControllerState` | transient local, on change and at 2 Hz |
+| `/map_server/reset_map` | service | controller_server → map_server | `std_srvs/Empty` | on takeoff |
+| `/fmu/in/*`, `/fmu/out/*` | topics | controller_server ⇄ PX4 | `px4_msgs/*` | setpoint stream at `rate_hz` (20 Hz) |
+| `navigate_to_pose`, `/goal_pose` | action, topic | client → navigator | `nav2_msgs/NavigateToPose`, `geometry_msgs/PoseStamped` | Nav2's own goal interface |
+
+**One navigation, step by step.** The goal arrives while the drone hovers. The first
+segment ends `local.horizon` along the route, the second is planned before the first ends,
+and a newly mapped obstacle forces one replan:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CL as RViz2 / client
+    participant NV as navigator
+    participant PS as planner_server
+    participant CS as controller_server
+    participant MS as map_server
+    participant PX4
+
+    par every lidar scan
+        MS->>PS: voxel_map (VoxelMap, shared snapshot)
+        MS->>CS: voxel_map (same object)
+    and every 50 ms
+        CS->>PX4: OffboardControlMode + TrajectorySetpoint
+        PX4-->>CS: VehicleOdometry, VehicleStatus
+    end
+
+    CS->>MS: reset_map (Empty), once armed
+    CS-->>NV: state = HOVER (ControllerState)
+    CL->>NV: NavigateToPose goal (or /goal_pose)
+
+    NV->>CS: GetReplanStart (lookahead, from_end = false)
+    CS-->>NV: start = hold point, following = false
+    NV->>PS: ComputePath goal (start, goal, solve_time)
+    Note over PS: A* route over the volume, then<br/>Informed-RRT* to the point 10 m along it
+    PS-->>NV: ComputePath result (path, route, final = false)
+    NV->>CS: FollowPath goal (path, final = false)
+
+    loop 10 Hz while flying
+        CS-->>NV: FollowPath feedback (distance_remaining, speed, blocked)
+        NV-->>CL: NavigateToPose feedback (pose, distance, time)
+    end
+
+    Note over NV: distance_remaining < replan_distance (5 m)
+    NV->>CS: GetReplanStart (from_end = true)
+    CS-->>NV: start = end of the current segment
+    NV->>PS: ComputePath goal
+    PS-->>NV: path, final = true
+    NV->>CS: FollowPath goal (spliced onto the reference)
+    CS-->>NV: previous FollowPath goal ends as REPLACED
+
+    opt the new map blocks the path ahead
+        CS-->>NV: feedback blocked = true, braking 0.5 m before it
+        NV->>CS: GetReplanStart (lookahead = solve time + 0.2 s)
+        CS-->>NV: start = where the reference will be
+        NV->>PS: ComputePath goal (supersedes any older request)
+        PS-->>NV: path
+        NV->>CS: FollowPath goal (spliced, no stop)
+    end
+
+    CS-->>NV: FollowPath result SUCCEEDED (goal reached)
+    NV-->>CL: NavigateToPose result SUCCEEDED
+```
+
+If every retry fails, the navigator cancels the `follow_path` goal instead: the controller
+stops along the path and hovers, and the navigation is aborted.
+
+At start-up `nav2_lifecycle_manager` calls `configure` then `activate` on map_server,
+planner_server, controller_server and navigator, in that order. Each server reads its
+parameters and creates its publishers in `configure`, and starts its subscriptions, timers and
+action servers in `activate`, so nothing moves before every server is ready.
+
 
 ### 1. Mapping (Bonxai, `map_server`)
 
